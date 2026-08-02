@@ -29,16 +29,20 @@ st.title("📋 銘柄分析ノート PRO")
 st.caption("最新のテクニカル分析とファンダメンタルズ情報を網羅する逆張り特化型ツール")
 
 @st.cache_data(ttl=3600)
-def scrape_kabutan(code):
+def scrape_japanese_info(code):
     info = {"name": "", "sector": "", "summary": ""}
-    url = f"https://kabutan.jp/stock/?code={code}"
+    # --- 1. 株探 (kabutan.jp) からの取得 ---
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        # SSL証明書エラー対策として verify=False を付与
+        url = f"https://kabutan.jp/stock/?code={code}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3'
+        }
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         res = requests.get(url, headers=headers, timeout=5, verify=False)
-        res.encoding = 'utf-8'  # 株探の文字化け対策
+        res.encoding = 'utf-8'
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             h2 = soup.find('h2', id='stockinfo_i1')
@@ -49,8 +53,32 @@ def scrape_kabutan(code):
             if summary_div:
                 text = summary_div.get_text()
                 info['summary'] = ' '.join(text.split()).replace('特色:', '\n【特色】').replace('連結事業:', '\n【連結事業】')
-    except Exception as e:
-        print("Scrape Error:", e)
+                if info['summary']: return info # 成功時はここで返す
+    except Exception:
+        pass
+        
+    # --- 2. フォールバック: Yahooファイナンス (日本) ---
+    try:
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T/profile"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
+        res = requests.get(url, headers=headers, timeout=5, verify=False)
+        res.encoding = 'utf-8'
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            title = soup.find('title')
+            if title and not info['name']:
+                info['name'] = title.text.split('【')[0].strip()
+            # 一番文字数の多いpタグを事業内容とみなす
+            longest_p = ""
+            for p in soup.find_all('p'):
+                txt = p.get_text().strip()
+                if len(txt) > len(longest_p):
+                    longest_p = txt
+            if len(longest_p) > 30:
+                info['summary'] = longest_p
+    except Exception:
+        pass
+
     return info
 
 def calculate_rsi(data, window=14):
@@ -122,7 +150,7 @@ def analyze_ticker(code):
     try: info = tk.info
     except Exception: info = {}
 
-    kb_info = scrape_kabutan(code)
+    kb_info = scrape_japanese_info(code)
     result["name"]      = kb_info.get('name') or safe_get(info, "shortName") or code
     result["sector"]    = kb_info.get('sector') or safe_get(info, "sector", "—")
     result["summary"]   = kb_info.get('summary') or safe_get(info, "longBusinessSummary", "")
