@@ -82,6 +82,64 @@ def _is_valid_summary(text: str) -> bool:
     return True
 
 
+# ============================================================
+# 銀行株など、株探の「特色」欄が【資金】【資産】【融資】のような
+# 構成比データになっているケース向けの解析・用語集
+# ============================================================
+BANK_TERM_GLOSSARY = {
+    "定期": "定期預金（一定期間は原則引き出せない代わりに金利が高めの預金）",
+    "普通": "普通預金（自由に出し入れできる一般的な預金）",
+    "当座": "当座預金（手形・小切手の決済に使う無利息の預金。主に企業が利用）",
+    "通知": "通知預金（引き出す際に事前通知が必要な、まとまった資金向けの預金）",
+    "現・預け金": "現金及び日銀・他の金融機関への預け金（すぐに使える手元資金）",
+    "有価証券": "国債・地方債・株式など、銀行が保有する有価証券",
+    "貸出金": "企業や個人への融資残高（銀行の収益の柱）",
+    "中小企業等向け": "中小企業向けの事業性融資",
+    "住宅・消費者向け": "住宅ローンやカードローンなど、個人向け融資",
+    "他": "その他の項目",
+}
+
+
+def parse_bracket_breakdown(text):
+    """
+    「【資金】定期24、普通66、当座4、他6【資産】現・預け金10、有価証券14…」
+    のような株探の銀行株特有フォーマットを
+    {"資金": [("定期",24.0), ("普通",66.0), ...], "資産": [...], ...} の形に変換する。
+    パースできなければ空dictを返す。
+    """
+    if not text:
+        return {}
+    sections = {}
+    for m in re.finditer(r'【([^】]{1,10})】\s*([^【]*)', text):
+        label = m.group(1).strip()
+        content = m.group(2).strip()
+        items = []
+        for im in re.finditer(
+            r'([一\u4e00-\u9fffぁ-んァ-ヶー・]{1,10}?)(\d{1,3}(?:\.\d+)?)(?:\([^)]*\))?(?=[、,]|$)',
+            content
+        ):
+            name = im.group(1).strip(' 、,・')
+            try:
+                pct = float(im.group(2))
+            except ValueError:
+                continue
+            if name and 0 < pct <= 100:
+                items.append((name, pct))
+        if items:
+            sections[label] = items
+    return sections
+
+
+def extract_intro_text(text, bracket_start_label="【"):
+    """括弧構成データが始まる前の、通常の説明文（あれば）だけを取り出す"""
+    if not text:
+        return ""
+    idx = text.find(bracket_start_label)
+    intro = text[:idx].strip() if idx > 0 else text.strip()
+    intro = re.sub(r'^【特色】\s*', '', intro).strip()
+    return intro
+
+
 def parse_segments(segment_text):
     """
     株探の「連結事業」テキスト（例：'自動車74(19)、金融9(20)、住宅1(3)'）から
@@ -467,6 +525,12 @@ def analyze_ticker(code):
     result["name"]      = kb_info.get('name') or safe_get(info, "shortName") or code
     result["sector"]    = kb_info.get('sector') or safe_get(info, "sector", "—")
     raw_summary = kb_info.get('summary') or safe_get(info, "longBusinessSummary", "")
+
+    # 銀行株など「【資金】定期24、普通66…」のような構成比データを解析
+    # （日本語の生テキストに対してのみ解析。翻訳前の raw_summary を使う）
+    result["bracket_breakdown"] = parse_bracket_breakdown(raw_summary) if _contains_japanese(raw_summary) else {}
+    result["summary_intro"] = extract_intro_text(raw_summary) if result["bracket_breakdown"] else ""
+
     result["summary"]   = translate_to_japanese(raw_summary) if raw_summary else ""
     result["segments"]  = kb_info.get('segments', [])
     result["segments_raw"] = kb_info.get('segments_raw', "")
@@ -627,7 +691,37 @@ if run and code:
         tab1, tab2 = st.tabs(["📋 事業概要", "💡 テクニカル詳細"])
         with tab1:
             st.markdown("#### 事業内容・特色")
-            st.write(r["summary"] if r["summary"] else "情報が取得できませんでした。")
+            if r.get("bracket_breakdown"):
+                # 銀行株など、構成比データ形式の場合は説明文＋構成比を分けて表示
+                if r.get("summary_intro"):
+                    st.write(r["summary_intro"])
+                else:
+                    st.caption("株探の「特色」欄が構成比データのみのため、下記に読みやすく整理しています。")
+            else:
+                st.write(r["summary"] if r["summary"] else "情報が取得できませんでした。")
+
+            # --- 銀行株など：資金・資産・融資の構成比 ---
+            if r.get("bracket_breakdown"):
+                st.markdown("#### 🏦 資金・資産・融資の構成比")
+                st.caption("株探の特色データを表＋グラフに変換したものです。用語名にカーソルを合わせる（スマホは長押し）と説明が出ます。")
+                bracket_cols = st.columns(len(r["bracket_breakdown"]))
+                for col, (label, items) in zip(bracket_cols, r["bracket_breakdown"].items()):
+                    with col:
+                        st.markdown(f"**【{label}】**")
+                        bdf = pd.DataFrame(items, columns=["項目", "構成比(%)"])
+                        for _, row in bdf.iterrows():
+                            term = row["項目"]
+                            help_text = BANK_TERM_GLOSSARY.get(term, "")
+                            if help_text:
+                                st.metric(term, f"{row['構成比(%)']:.0f}%", help=help_text, label_visibility="visible")
+                            else:
+                                st.metric(term, f"{row['構成比(%)']:.0f}%")
+                        fig_b = go.Figure(data=[go.Pie(
+                            labels=bdf["項目"], values=bdf["構成比(%)"], hole=0.45, textinfo="percent"
+                        )])
+                        fig_b.update_layout(margin=dict(l=5, r=5, t=5, b=5), height=200, showlegend=True,
+                                             legend=dict(orientation="h", font=dict(size=9)))
+                        st.plotly_chart(fig_b, use_container_width=True, config={'displayModeBar': False})
 
             # --- 主力事業セグメント ---
             if r.get("segments"):
