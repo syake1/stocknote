@@ -33,8 +33,12 @@ def scrape_kabutan(code):
     info = {"name": "", "sector": "", "summary": ""}
     url = f"https://kabutan.jp/stock/?code={code}"
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        # SSL証明書エラー対策として verify=False を付与
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        res = requests.get(url, headers=headers, timeout=5, verify=False)
+        res.encoding = 'utf-8'  # 株探の文字化け対策
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             h2 = soup.find('h2', id='stockinfo_i1')
@@ -45,8 +49,8 @@ def scrape_kabutan(code):
             if summary_div:
                 text = summary_div.get_text()
                 info['summary'] = ' '.join(text.split()).replace('特色:', '\n【特色】').replace('連結事業:', '\n【連結事業】')
-    except Exception:
-        pass
+    except Exception as e:
+        print("Scrape Error:", e)
     return info
 
 def calculate_rsi(data, window=14):
@@ -253,6 +257,12 @@ if run and code:
         with tab1:
             st.markdown("#### 事業内容・特色")
             st.write(r["summary"] if r["summary"] else "情報が取得できませんでした。")
+            
+            # IR情報・公式サイトへのリンクを追加
+            st.markdown("---")
+            st.markdown("#### 🔗 関連リンク (IR・企業情報)")
+            st.markdown(f"- [Yahoo!ファイナンスで企業情報・IRを見る](https://finance.yahoo.co.jp/quote/{r['code']}.T/profile)")
+            st.markdown(f"- [株探で業績推移を見る](https://kabutan.jp/stock/?code={r['code']})")
         with tab2:
             st.write("ボリンジャーバンドの-2σ（青点線の下限）や、RSIが30を下回るタイミングが逆張りの狙い目となります。")
             
