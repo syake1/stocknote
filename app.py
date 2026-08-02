@@ -38,6 +38,37 @@ _INVALID_SUMMARY_PATTERNS = [
     "ページが見つかりません", "アクセスが集中", "only", "403", "404",
 ]
 
+def _contains_japanese(text: str) -> bool:
+    """テキストに日本語（ひらがな/カタカナ/漢字）が含まれているか判定"""
+    if not text:
+        return False
+    return bool(re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', text))
+
+
+@st.cache_data(ttl=86400)
+def translate_to_japanese(text: str) -> str:
+    """
+    yfinanceのlongBusinessSummary等、英語しか取得できなかった場合に日本語へ自動翻訳する。
+    deep-translatorが使えない/翻訳に失敗した場合は、原文に注記を付けてそのまま返す。
+    """
+    if not text:
+        return text
+    if _contains_japanese(text):
+        return text
+    try:
+        from deep_translator import GoogleTranslator
+        # 長すぎる場合は分割して翻訳（GoogleTranslatorは1回あたりの文字数制限があるため）
+        chunks = [text[i:i + 4500] for i in range(0, len(text), 4500)]
+        translated_chunks = [GoogleTranslator(source='en', target='ja').translate(c) for c in chunks]
+        translated = ' '.join(t for t in translated_chunks if t)
+        if translated:
+            return translated + "\n\n※英語の企業情報（yfinance提供）を自動翻訳しています。ニュアンスが不正確な場合があります。"
+    except Exception:
+        pass
+    # 翻訳できなかった場合はそのまま返す（原文が英語であることを明記）
+    return text + "\n\n※日本語の企業情報が取得できなかったため、英語の原文をそのまま表示しています。"
+
+
 def _is_valid_summary(text: str) -> bool:
     if not text:
         return False
@@ -435,7 +466,8 @@ def analyze_ticker(code):
     kb_info = scrape_japanese_info(code)
     result["name"]      = kb_info.get('name') or safe_get(info, "shortName") or code
     result["sector"]    = kb_info.get('sector') or safe_get(info, "sector", "—")
-    result["summary"]   = kb_info.get('summary') or safe_get(info, "longBusinessSummary", "")
+    raw_summary = kb_info.get('summary') or safe_get(info, "longBusinessSummary", "")
+    result["summary"]   = translate_to_japanese(raw_summary) if raw_summary else ""
     result["segments"]  = kb_info.get('segments', [])
     result["segments_raw"] = kb_info.get('segments_raw', "")
     result["employees"] = safe_get(info, "fullTimeEmployees", "—")
