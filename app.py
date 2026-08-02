@@ -325,6 +325,56 @@ def fmt_market_cap(x):
     return f"{oku:,.0f} 億円"
 
 
+# ============================================================
+# 財務指標の説明文（st.metricのhelpツールチップに表示）
+# ============================================================
+METRIC_HELP = {
+    "market_cap": "時価総額＝株価×発行済株式数。会社の規模・市場評価額の目安です。",
+    "per": "PER（株価収益率）＝株価 ÷ 1株当たり利益。株価が利益の何年分かを示し、低いほど「割安」とされます（業種により適正水準は異なります）。",
+    "pbr": "PBR（株価純資産倍率）＝株価 ÷ 1株当たり純資産。1倍が「解散価値」の目安で、1倍未満は資産価値より株価が安い状態です。",
+    "roe": "ROE（自己資本利益率）＝当期純利益 ÷ 自己資本。株主が出したお金でどれだけ効率的に利益を稼いでいるかを示します。高いほど資本効率が良いとされます。",
+    "roa": "ROA（総資産利益率）＝当期純利益 ÷ 総資産。会社の持つ全資産をどれだけ効率的に使って利益を出しているかを示します。",
+    "dividend_yield": "配当利回り＝年間配当金 ÷ 株価。株価に対して配当でどれだけ還元されるかを示します。",
+    "equity_ratio": "自己資本比率＝自己資本 ÷ 総資産。高いほど借金が少なく財務が健全（倒産しにくい）とされます。",
+    "op_margin": "営業利益率＝営業利益 ÷ 売上高。本業でどれだけ効率よく稼げているかを示す収益力の指標です。",
+    "revenue_growth": "売上高成長率＝前年同期比の売上高の伸び率。会社が成長しているかどうかの目安です。",
+}
+
+
+def _eval_badge(value, thresholds, labels):
+    """
+    value: 評価対象の数値（None可）
+    thresholds: 昇順の閾値リスト 例 [0.08, 0.15] -> 3区分
+    labels: (低評価, 中間評価, 高評価) のラベルタプル（thresholdsの数+1個）
+    戻り値: 評価バッジ文字列（例 "🟢 優良水準"）。valueがNoneなら空文字。
+    """
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    idx = 0
+    for t in thresholds:
+        if value >= t:
+            idx += 1
+        else:
+            break
+    return labels[idx]
+
+
+def evaluate_financials(fin):
+    """各指標について簡易評価バッジを付与して返す（あくまで一般的な目安）"""
+    ev = {}
+    ev["per"] = _eval_badge(fin.get("per"), [15, 25], ("🟢 割安水準", "🟡 標準的", "🔴 割高水準")) if fin.get("per") else ""
+    if fin.get("per") and fin["per"] < 0:
+        ev["per"] = "⚫ 赤字（PERマイナス）"
+    ev["pbr"] = _eval_badge(fin.get("pbr"), [1, 3], ("🟢 割安（解散価値割れ）", "🟡 標準的", "🔴 割高水準")) if fin.get("pbr") else ""
+    ev["roe"] = _eval_badge(fin.get("roe"), [0.08, 0.15], ("🔴 資本効率は低め", "🟡 標準的", "🟢 高い資本効率")) if fin.get("roe") is not None else ""
+    ev["roa"] = _eval_badge(fin.get("roa"), [0.02, 0.05], ("🔴 やや低め", "🟡 標準的", "🟢 効率良好")) if fin.get("roa") is not None else ""
+    ev["dividend_yield"] = _eval_badge(fin.get("dividend_yield"), [0.02, 0.04], ("🔴 低め", "🟡 標準的", "🟢 高配当")) if fin.get("dividend_yield") is not None else ""
+    ev["equity_ratio"] = _eval_badge(fin.get("equity_ratio"), [0.3, 0.5], ("🔴 財務やや不安定", "🟡 標準的", "🟢 財務健全")) if fin.get("equity_ratio") is not None else ""
+    ev["op_margin"] = _eval_badge(fin.get("op_margin"), [0.05, 0.15], ("🔴 収益力は低め", "🟡 標準的", "🟢 高収益体質")) if fin.get("op_margin") is not None else ""
+    ev["revenue_growth"] = _eval_badge(fin.get("revenue_growth"), [0, 0.10], ("🔴 減収", "🟡 横ばい〜微増", "🟢 高成長")) if fin.get("revenue_growth") is not None else ""
+    return ev
+
+
 @st.cache_data(ttl=3600)
 def get_performance_trend(code):
     """
@@ -529,9 +579,9 @@ if run and code:
             """, unsafe_allow_html=True)
             
             c1, c2, c3 = st.columns(3)
-            c1.metric("逆張りチャンススコア", f"{r['scores']['momentum']:.1f} / 10")
-            c2.metric("現在RSI (14)", f"{r['rsi']:.1f}")
-            c3.metric("PER / PBR", f"{fmt_num(r['per'])} / {fmt_num(r['pbr'])}")
+            c1.metric("逆張りチャンススコア", f"{r['scores']['momentum']:.1f} / 10", help="RSIの低さやボリンジャーバンド-2σ近辺かどうかから算出した、逆張り買いタイミングとしての狙い目度（10が最も狙い目）。")
+            c2.metric("現在RSI (14)", f"{r['rsi']:.1f}", help="RSI（相対力指数）＝直近の値上がり幅と値下がり幅の比率から算出する指標。一般に30以下は「売られすぎ」、70以上は「買われすぎ」の目安とされます。")
+            c3.metric("PER / PBR", f"{fmt_num(r['per'])} / {fmt_num(r['pbr'])}", help="PER＝株価収益率（低いほど割安の目安）／PBR＝株価純資産倍率（1倍が解散価値の目安）。詳しい説明は下部「財務ハイライト」を参照してください。")
 
         with h_col2:
             st.markdown("#### 企業スコア (逆張り評価)")
@@ -571,19 +621,37 @@ if run and code:
 
             # --- 財務ハイライト ---
             st.markdown("#### 💰 財務ハイライト")
+            st.caption("各指標名にカーソルを合わせる（スマホは長押し）と説明が表示されます。評価は一般的な目安であり、業種や成長ステージにより適正水準は異なります。")
             fin = r.get("financials", {})
+            ev = evaluate_financials(fin)
+
             fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
-            fc1.metric("時価総額", fmt_market_cap(fin.get("market_cap")))
-            fc2.metric("PER", fmt_num(fin.get("per")) + " 倍" if fin.get("per") else "—")
-            fc3.metric("PBR", fmt_num(fin.get("pbr")) + " 倍" if fin.get("pbr") else "—")
-            fc4.metric("ROE", fmt_pct(fin.get("roe")))
-            fc5.metric("配当利回り", fmt_pct(fin.get("dividend_yield")))
-            fc6.metric("自己資本比率", fmt_pct(fin.get("equity_ratio")))
+            fc1.metric("時価総額", fmt_market_cap(fin.get("market_cap")), help=METRIC_HELP["market_cap"])
+
+            fc2.metric("PER", (fmt_num(fin.get("per")) + " 倍") if fin.get("per") else "—", help=METRIC_HELP["per"])
+            if ev.get("per"): fc2.caption(ev["per"])
+
+            fc3.metric("PBR", (fmt_num(fin.get("pbr")) + " 倍") if fin.get("pbr") else "—", help=METRIC_HELP["pbr"])
+            if ev.get("pbr"): fc3.caption(ev["pbr"])
+
+            fc4.metric("ROE", fmt_pct(fin.get("roe")), help=METRIC_HELP["roe"])
+            if ev.get("roe"): fc4.caption(ev["roe"])
+
+            fc5.metric("配当利回り", fmt_pct(fin.get("dividend_yield")), help=METRIC_HELP["dividend_yield"])
+            if ev.get("dividend_yield"): fc5.caption(ev["dividend_yield"])
+
+            fc6.metric("自己資本比率", fmt_pct(fin.get("equity_ratio")), help=METRIC_HELP["equity_ratio"])
+            if ev.get("equity_ratio"): fc6.caption(ev["equity_ratio"])
 
             fc7, fc8, fc9 = st.columns(3)
-            fc7.metric("ROA", fmt_pct(fin.get("roa")))
-            fc8.metric("営業利益率", fmt_pct(fin.get("op_margin")))
-            fc9.metric("売上高成長率", fmt_pct(fin.get("revenue_growth")))
+            fc7.metric("ROA", fmt_pct(fin.get("roa")), help=METRIC_HELP["roa"])
+            if ev.get("roa"): fc7.caption(ev["roa"])
+
+            fc8.metric("営業利益率", fmt_pct(fin.get("op_margin")), help=METRIC_HELP["op_margin"])
+            if ev.get("op_margin"): fc8.caption(ev["op_margin"])
+
+            fc9.metric("売上高成長率", fmt_pct(fin.get("revenue_growth")), help=METRIC_HELP["revenue_growth"])
+            if ev.get("revenue_growth"): fc9.caption(ev["revenue_growth"])
 
             st.markdown("---")
 
