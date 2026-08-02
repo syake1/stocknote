@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import requests
+import re
 from bs4 import BeautifulSoup
 import plotly.graph_objects as go
 from datetime import datetime
@@ -53,7 +54,7 @@ def scrape_japanese_info(code):
             if summary_div:
                 text = summary_div.get_text()
                 info['summary'] = ' '.join(text.split()).replace('特色:', '\n【特色】').replace('連結事業:', '\n【連結事業】')
-                if info['summary']: return info # 成功時はここで返す
+                if info['summary']: return info
     except Exception:
         pass
         
@@ -68,7 +69,6 @@ def scrape_japanese_info(code):
             title = soup.find('title')
             if title and not info['name']:
                 info['name'] = title.text.split('【')[0].strip()
-            # 一番文字数の多いpタグを事業内容とみなす
             longest_p = ""
             for p in soup.find_all('p'):
                 txt = p.get_text().strip()
@@ -79,6 +79,39 @@ def scrape_japanese_info(code):
     except Exception:
         pass
 
+    return info
+
+@st.cache_data(ttl=3600)
+def scrape_minkabu(code):
+    info = {"target_price": "—", "analyst_trend": "—"}
+    try:
+        url = f"https://minkabu.jp/stock/{code}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3'
+        }
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        res = requests.get(url, headers=headers, timeout=5, verify=False)
+        res.encoding = 'utf-8'
+        if res.status_code == 200:
+            text = res.text
+            # 簡易的な正規表現で目標株価を抽出（みんかぶの構造が複雑なため）
+            # 例: みんかぶ目標株価 <span>3,500</span>円
+            m = re.search(r'みんかぶ目標株価.*?([0-9,.]+)円', text, re.DOTALL)
+            if m:
+                info["target_price"] = m.group(1) + " 円"
+            
+            # アナリスト予想（買い・売り）の抽出
+            if "買い予想" in text and "売り予想" not in text:
+                info["analyst_trend"] = "🔥 買い"
+            elif "売り予想" in text and "買い予想" not in text:
+                info["analyst_trend"] = "🔻 売り"
+            else:
+                info["analyst_trend"] = "中立"
+    except Exception:
+        pass
     return info
 
 def calculate_rsi(data, window=14):
@@ -157,6 +190,9 @@ def analyze_ticker(code):
     result["employees"] = safe_get(info, "fullTimeEmployees", "—")
     result["target_price_analyst"] = safe_get(info, "targetMeanPrice")
 
+    # みんかぶ情報の取得
+    result["minkabu"] = scrape_minkabu(code)
+
     try:
         hist = tk.history(period="2y")
     except Exception as e:
@@ -182,7 +218,6 @@ def analyze_ticker(code):
     result["current_price"] = current_price
     result["rsi"] = float(latest['RSI'])
     
-    # 目標株価シミュレーション（逆張り用）
     buy_target = float(latest['BB_lower'])
     sell_target = float(latest['BB_mid'])
     final_target = result["target_price_analyst"] if result["target_price_analyst"] else float(latest['BB_upper'])
@@ -191,22 +226,19 @@ def analyze_ticker(code):
     result["sim_sell"] = sell_target if sell_target > current_price else current_price * 1.05
     result["sim_target"] = final_target if final_target > current_price else current_price * 1.10
 
-    # スコアリング（10点満点）
     per = safe_get(info, "trailingPE")
     pbr = safe_get(info, "priceToBook")
     roe = safe_get(info, "returnOnEquity")
     mcap = safe_get(info, "marketCap")
     
-    sc_val = calc_score(per, 5, 30, reverse=True) # 割安性 (PER低いほど高得点)
-    sc_prof = calc_score(roe, 0, 0.20) # 収益性 (ROE 0〜20%)
-    sc_stab = calc_score(mcap, 1e10, 1e12) # 安定性 (時価総額)
+    sc_val = calc_score(per, 5, 30, reverse=True)
+    sc_prof = calc_score(roe, 0, 0.20)
+    sc_stab = calc_score(mcap, 1e10, 1e12)
     
-    # 逆張りチャンス (RSI低いほど高得点。30以下で10点、70以上で0点)
     sc_mom = calc_score(result["rsi"], 30, 70, reverse=True)
     if current_price <= buy_target * 1.02: 
-        sc_mom = 10.0 # ボリンジャー-2σ接近でチャンスMAX
+        sc_mom = 10.0
         
-    # 財務健全性（簡易的に自己資本比率またはPBR/PERから推測）
     sc_fin = calc_score(1/pbr if pbr else None, 0.2, 2.0)
     
     result["scores"] = {
@@ -237,7 +269,6 @@ if run and code:
     else:
         st.markdown("---")
         
-        # ヘッダー領域（左：基本情報と価格シミュレーション、右：レーダーチャート）
         h_col1, h_col2 = st.columns([3, 2])
         
         with h_col1:
@@ -264,6 +295,9 @@ if run and code:
                         <div class="price-value">¥ {r['sim_target']:,.0f}</div>
                     </div>
                 </div>
+                <div style="margin-top: 10px; font-size: 0.9rem; color: #555;">
+                    ※ 📊 <b>みんかぶ目標株価:</b> {r['minkabu']['target_price']} (予想: {r['minkabu']['analyst_trend']})
+                </div>
             </div>
             """, unsafe_allow_html=True)
             
@@ -286,15 +320,17 @@ if run and code:
             st.markdown("#### 事業内容・特色")
             st.write(r["summary"] if r["summary"] else "情報が取得できませんでした。")
             
-            # IR情報・公式サイトへのリンクを追加
             st.markdown("---")
             st.markdown("#### 🔗 関連リンク (IR・企業情報)")
             st.markdown(f"- [Yahoo!ファイナンスで企業情報・IRを見る](https://finance.yahoo.co.jp/quote/{r['code']}.T/profile)")
-            st.markdown(f"- [株探で業績推移を見る](https://kabutan.jp/stock/?code={r['code']})")
+            st.markdown(f"- [株探で業績推移・ニュースを見る](https://kabutan.jp/stock/?code={r['code']})")
+            st.markdown(f"- [みんなの株式（みんかぶ）でアナリスト予想を見る](https://minkabu.jp/stock/{r['code']})")
+            st.markdown(f"- [JPX（日本取引所グループ）適時開示情報検索](https://www.release.tdnet.info/inbs/I_main_00.html)")
+            
         with tab2:
             st.write("ボリンジャーバンドの-2σ（青点線の下限）や、RSIが30を下回るタイミングが逆張りの狙い目となります。")
             
-        st.caption(f"更新日時: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}  |  提供元: 株探 (kabutan.jp) / Yahoo Finance")
+        st.caption(f"更新日時: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}  |  情報提供元: 株探 / Yahoo Finance / みんかぶ")
 
 elif run and not code:
     st.warning("⚠️ 銘柄コードを入力してください。")
