@@ -51,9 +51,34 @@ def _is_valid_summary(text: str) -> bool:
     return True
 
 
+def parse_segments(segment_text):
+    """
+    株探の「連結事業」テキスト（例：'自動車74(19)、金融9(20)、住宅1(3)'）から
+    [(セグメント名, 構成比%), ...] のリストを抽出する。
+    パースできない場合は空リストを返す（呼び出し側は生テキストを表示すればよい）。
+    """
+    if not segment_text:
+        return []
+    results = []
+    # 株探の表記は「自動車74(19)、金融9(20)」のように%記号が付かない場合が多いため、
+    # 「セグメント名＋構成比の数字＋(利益率など、任意)」のパターンで抽出する（%記号があっても対応）
+    for m in re.finditer(
+        r'([一\u4e00-\u9fffぁ-んァ-ヶーA-Za-z・]{1,14})(\d{1,3}(?:\.\d+)?)[%％]?(?:\(\-?\d+(?:\.\d+)?\))?',
+        segment_text
+    ):
+        name = m.group(1).strip(' 、,・')
+        try:
+            pct = float(m.group(2))
+        except ValueError:
+            continue
+        if name and 0 < pct <= 100:
+            results.append((name, pct))
+    return results
+
+
 @st.cache_data(ttl=3600)
 def scrape_japanese_info(code):
-    info = {"name": "", "sector": "", "summary": ""}
+    info = {"name": "", "sector": "", "summary": "", "segments_raw": "", "segments": []}
 
     # --- 1. 株探 (kabutan.jp) からの取得 ---
     try:
@@ -88,26 +113,34 @@ def scrape_japanese_info(code):
                 info['sector'] = sector_a[0].get_text().strip()
 
             # 特色・連結事業（company_blockが見つからない場合はページ全文から正規表現で抽出）
-            summary_text = ""
+            tokusyoku_text = ""
+            segment_text = ""
             summary_div = soup.find('div', class_='company_block')
             if summary_div:
-                text = summary_div.get_text()
-                summary_text = ' '.join(text.split())
-                summary_text = summary_text.replace('特色:', '\n【特色】').replace('連結事業:', '\n【連結事業】')
+                text = ' '.join(summary_div.get_text().split())
+                m_t = re.search(r'特色[:：]?\s*(.{5,300}?)(?:連結事業|$)', text)
+                if m_t:
+                    tokusyoku_text = m_t.group(1).strip()
+                m_s = re.search(r'連結事業[:：]?\s*(.{3,250}?)$', text)
+                if m_s:
+                    segment_text = m_s.group(1).strip()
 
-            if not _is_valid_summary(summary_text):
+            if not _is_valid_summary(tokusyoku_text):
                 # フォールバック：ページ全体のテキストから「特色」「連結事業」を含む箇所を正規表現で拾う
                 full_text = ' '.join(soup.get_text().split())
                 m = re.search(r'特色[:：]?\s*(.{10,300}?)(?:連結事業|株探ポイント|【|$)', full_text)
                 if m:
-                    candidate = '【特色】' + m.group(1).strip()
-                    m2 = re.search(r'連結事業[:：]?\s*(.{5,200}?)(?:【|株探ポイント|$)', full_text)
-                    if m2:
-                        candidate += '\n【連結事業】' + m2.group(1).strip()
-                    summary_text = candidate
+                    tokusyoku_text = m.group(1).strip()
+                m2 = re.search(r'連結事業[:：]?\s*(.{5,200}?)(?:【|株探ポイント|$)', full_text)
+                if m2:
+                    segment_text = m2.group(1).strip()
 
-            if _is_valid_summary(summary_text):
-                info['summary'] = summary_text
+            if _is_valid_summary(tokusyoku_text):
+                info['summary'] = '【特色】' + tokusyoku_text
+                if segment_text:
+                    info['summary'] += '\n【連結事業】' + segment_text
+                    info['segments_raw'] = segment_text
+                    info['segments'] = parse_segments(segment_text)
                 return info
     except Exception:
         pass
@@ -264,6 +297,77 @@ def create_radar_chart(scores):
     )
     return fig
 
+def get_financial_highlights(info):
+    """時価総額・PER・PBR・ROE・配当利回り・自己資本比率などをまとめて返す"""
+    h = {}
+    h["market_cap"] = safe_get(info, "marketCap")
+    h["per"] = safe_get(info, "trailingPE")
+    h["pbr"] = safe_get(info, "priceToBook")
+    h["roe"] = safe_get(info, "returnOnEquity")
+    h["roa"] = safe_get(info, "returnOnAssets")
+    div_yield = safe_get(info, "dividendYield")
+    # yfinanceはdividendYieldを「%」の数値（例: 2.5）で返す場合と小数（0.025）で返す場合が混在するため補正
+    if div_yield is not None:
+        div_yield = div_yield / 100 if div_yield > 1 else div_yield
+    h["dividend_yield"] = div_yield
+    h["equity_ratio"] = None  # balance sheetから別途計算
+    h["op_margin"] = safe_get(info, "operatingMargins")
+    h["revenue_growth"] = safe_get(info, "revenueGrowth")
+    return h
+
+
+def fmt_market_cap(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    oku = x / 1e8  # 億円換算
+    if oku >= 10000:
+        return f"{oku/10000:,.1f} 兆円"
+    return f"{oku:,.0f} 億円"
+
+
+@st.cache_data(ttl=3600)
+def get_performance_trend(code):
+    """
+    年次の売上高・営業利益・純利益の推移（直近最大4期）を取得する。
+    yfinanceのfinancials（income statement）が取得できない銘柄もあるため、
+    取得できた分だけ返す。戻り値はDataFrame（列=決算期、行=売上高/営業利益/純利益）または None。
+    """
+    try:
+        tk = yf.Ticker(f"{code}.T")
+        fin = tk.financials  # annual income statement, columns=決算期（降順）
+        if fin is None or fin.empty:
+            return None
+
+        def pick_row(candidates):
+            for name in candidates:
+                if name in fin.index:
+                    return fin.loc[name]
+            return None
+
+        revenue = pick_row(["Total Revenue", "TotalRevenue", "Operating Revenue"])
+        op_income = pick_row(["Operating Income", "OperatingIncome"])
+        net_income = pick_row(["Net Income", "NetIncome", "Net Income Common Stockholders"])
+
+        if revenue is None and net_income is None:
+            return None
+
+        cols = fin.columns[:4]  # 直近4期
+        data = {}
+        if revenue is not None:
+            data["売上高"] = (revenue[cols] / 1e8).round(0)
+        if op_income is not None:
+            data["営業利益"] = (op_income[cols] / 1e8).round(0)
+        if net_income is not None:
+            data["純利益"] = (net_income[cols] / 1e8).round(0)
+
+        df = pd.DataFrame(data).T
+        df.columns = [c.strftime("%Y/%m") for c in cols]
+        df = df[df.columns[::-1]]  # 古い順に並べ替え
+        return df
+    except Exception:
+        return None
+
+
 def calc_score(val, v_min, v_max, reverse=False):
     if val is None or np.isnan(val): return 5
     if reverse:
@@ -282,8 +386,36 @@ def analyze_ticker(code):
     result["name"]      = kb_info.get('name') or safe_get(info, "shortName") or code
     result["sector"]    = kb_info.get('sector') or safe_get(info, "sector", "—")
     result["summary"]   = kb_info.get('summary') or safe_get(info, "longBusinessSummary", "")
+    result["segments"]  = kb_info.get('segments', [])
+    result["segments_raw"] = kb_info.get('segments_raw', "")
     result["employees"] = safe_get(info, "fullTimeEmployees", "—")
     result["target_price_analyst"] = safe_get(info, "targetMeanPrice")
+
+    # 財務ハイライトと業績推移
+    result["financials"] = get_financial_highlights(info)
+    result["perf_trend"] = get_performance_trend(code)
+    # 自己資本比率（balance sheetから計算。取得できない場合はNoneのまま）
+    try:
+        bs = tk.balance_sheet
+        if bs is not None and not bs.empty:
+            equity_row = None
+            for name in ["Stockholders Equity", "Total Stockholder Equity", "StockholdersEquity"]:
+                if name in bs.index:
+                    equity_row = bs.loc[name]
+                    break
+            assets_row = None
+            for name in ["Total Assets", "TotalAssets"]:
+                if name in bs.index:
+                    assets_row = bs.loc[name]
+                    break
+            if equity_row is not None and assets_row is not None:
+                latest_col = bs.columns[0]
+                eq = equity_row.get(latest_col)
+                asset = assets_row.get(latest_col)
+                if eq and asset:
+                    result["financials"]["equity_ratio"] = float(eq) / float(asset)
+    except Exception:
+        pass
 
     # みんかぶ情報の取得
     result["minkabu"] = scrape_minkabu(code)
@@ -414,7 +546,78 @@ if run and code:
         with tab1:
             st.markdown("#### 事業内容・特色")
             st.write(r["summary"] if r["summary"] else "情報が取得できませんでした。")
-            
+
+            # --- 主力事業セグメント ---
+            if r.get("segments"):
+                st.markdown("#### 🏭 主力事業セグメント（連結売上構成比）")
+                seg_df = pd.DataFrame(r["segments"], columns=["セグメント", "構成比(%)"]).sort_values(
+                    "構成比(%)", ascending=False
+                )
+                seg_col1, seg_col2 = st.columns([1, 1])
+                with seg_col1:
+                    st.dataframe(seg_df, hide_index=True, use_container_width=True)
+                with seg_col2:
+                    fig_seg = go.Figure(data=[go.Pie(
+                        labels=seg_df["セグメント"], values=seg_df["構成比(%)"],
+                        hole=0.45, textinfo="label+percent"
+                    )])
+                    fig_seg.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=260, showlegend=False)
+                    st.plotly_chart(fig_seg, use_container_width=True, config={'displayModeBar': False})
+            elif r.get("segments_raw"):
+                st.markdown("#### 🏭 主力事業セグメント")
+                st.caption(r["segments_raw"])
+
+            st.markdown("---")
+
+            # --- 財務ハイライト ---
+            st.markdown("#### 💰 財務ハイライト")
+            fin = r.get("financials", {})
+            fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
+            fc1.metric("時価総額", fmt_market_cap(fin.get("market_cap")))
+            fc2.metric("PER", fmt_num(fin.get("per")) + " 倍" if fin.get("per") else "—")
+            fc3.metric("PBR", fmt_num(fin.get("pbr")) + " 倍" if fin.get("pbr") else "—")
+            fc4.metric("ROE", fmt_pct(fin.get("roe")))
+            fc5.metric("配当利回り", fmt_pct(fin.get("dividend_yield")))
+            fc6.metric("自己資本比率", fmt_pct(fin.get("equity_ratio")))
+
+            fc7, fc8, fc9 = st.columns(3)
+            fc7.metric("ROA", fmt_pct(fin.get("roa")))
+            fc8.metric("営業利益率", fmt_pct(fin.get("op_margin")))
+            fc9.metric("売上高成長率", fmt_pct(fin.get("revenue_growth")))
+
+            st.markdown("---")
+
+            # --- 業績推移 ---
+            st.markdown("#### 📊 業績推移（単位：億円）")
+            perf = r.get("perf_trend")
+            if perf is not None and not perf.empty:
+                perf_col1, perf_col2 = st.columns([1, 2])
+                with perf_col1:
+                    st.dataframe(perf, use_container_width=True)
+                    # 直近期の前年比（売上高・純利益）
+                    if perf.shape[1] >= 2:
+                        latest_p, prev_p = perf.columns[-1], perf.columns[-2]
+                        if "売上高" in perf.index and prev_p in perf.columns:
+                            rev_prev, rev_latest = perf.loc["売上高", prev_p], perf.loc["売上高", latest_p]
+                            if rev_prev:
+                                st.caption(f"売上高 前期比: {((rev_latest / rev_prev) - 1) * 100:+.1f}%")
+                        if "純利益" in perf.index:
+                            ni_prev, ni_latest = perf.loc["純利益", prev_p], perf.loc["純利益", latest_p]
+                            if ni_prev:
+                                st.caption(f"純利益 前期比: {((ni_latest / ni_prev) - 1) * 100:+.1f}%")
+                with perf_col2:
+                    fig_perf = go.Figure()
+                    for idx in perf.index:
+                        fig_perf.add_trace(go.Bar(x=perf.columns, y=perf.loc[idx], name=idx))
+                    fig_perf.update_layout(
+                        barmode="group", template="plotly_white",
+                        margin=dict(l=20, r=20, t=20, b=20), height=300,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                    )
+                    st.plotly_chart(fig_perf, use_container_width=True, config={'displayModeBar': False})
+            else:
+                st.caption("業績データを取得できませんでした。")
+
             st.markdown("---")
             st.markdown("#### 🔗 関連リンク (IR・企業情報)")
             st.markdown(f"- [Yahoo!ファイナンスで企業情報・IRを見る](https://finance.yahoo.co.jp/quote/{r['code']}.T/profile)")
