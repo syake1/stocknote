@@ -29,9 +29,32 @@ div[data-testid="stMetricLabel"] { font-size: 0.9rem; color: #666; }
 st.title("📋 銘柄分析ノート PRO")
 st.caption("最新のテクニカル分析とファンダメンタルズ情報を網羅する逆張り特化型ツール")
 
+# ============================================================
+# 事業内容・特色のスクレイピングで無効な文言（JS警告等）を弾くためのブラックリスト
+# ============================================================
+_INVALID_SUMMARY_PATTERNS = [
+    "javascript", "java script", "スクリプト", "cookie", "クッキー",
+    "設定を変更する方法", "ブラウザの設定", "有効にしてください", "無効になっています",
+    "ページが見つかりません", "アクセスが集中", "only", "403", "404",
+]
+
+def _is_valid_summary(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    if len(t) < 15:
+        return False
+    low = t.lower()
+    for pat in _INVALID_SUMMARY_PATTERNS:
+        if pat.lower() in low:
+            return False
+    return True
+
+
 @st.cache_data(ttl=3600)
 def scrape_japanese_info(code):
     info = {"name": "", "sector": "", "summary": ""}
+
     # --- 1. 株探 (kabutan.jp) からの取得 ---
     try:
         url = f"https://kabutan.jp/stock/?code={code}"
@@ -42,42 +65,114 @@ def scrape_japanese_info(code):
         }
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        res = requests.get(url, headers=headers, timeout=5, verify=False)
+        res = requests.get(url, headers=headers, timeout=8, verify=False)
         res.encoding = 'utf-8'
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
+
+            # 銘柄名（複数パターンでトライ）
             h2 = soup.find('h2', id='stockinfo_i1')
-            if h2: info['name'] = h2.get_text().split(' ')[-1]
+            if h2:
+                info['name'] = h2.get_text().split(' ')[-1].strip()
+            if not info['name']:
+                title = soup.find('title')
+                if title:
+                    # 例：「トヨタ自動車【7203】株の基本情報｜株探」
+                    m = re.match(r'^(.*?)【', title.get_text())
+                    if m:
+                        info['name'] = m.group(1).strip()
+
+            # 業種
             sector_a = soup.select('div.company_block a')
-            if sector_a: info['sector'] = sector_a[0].get_text()
+            if sector_a:
+                info['sector'] = sector_a[0].get_text().strip()
+
+            # 特色・連結事業（company_blockが見つからない場合はページ全文から正規表現で抽出）
+            summary_text = ""
             summary_div = soup.find('div', class_='company_block')
             if summary_div:
                 text = summary_div.get_text()
-                info['summary'] = ' '.join(text.split()).replace('特色:', '\n【特色】').replace('連結事業:', '\n【連結事業】')
-                if info['summary']: return info
+                summary_text = ' '.join(text.split())
+                summary_text = summary_text.replace('特色:', '\n【特色】').replace('連結事業:', '\n【連結事業】')
+
+            if not _is_valid_summary(summary_text):
+                # フォールバック：ページ全体のテキストから「特色」「連結事業」を含む箇所を正規表現で拾う
+                full_text = ' '.join(soup.get_text().split())
+                m = re.search(r'特色[:：]?\s*(.{10,300}?)(?:連結事業|株探ポイント|【|$)', full_text)
+                if m:
+                    candidate = '【特色】' + m.group(1).strip()
+                    m2 = re.search(r'連結事業[:：]?\s*(.{5,200}?)(?:【|株探ポイント|$)', full_text)
+                    if m2:
+                        candidate += '\n【連結事業】' + m2.group(1).strip()
+                    summary_text = candidate
+
+            if _is_valid_summary(summary_text):
+                info['summary'] = summary_text
+                return info
     except Exception:
         pass
-        
-    # --- 2. フォールバック: Yahooファイナンス (日本) ---
+
+    # --- 2. フォールバック: みんかぶ (minkabu.jp) の企業概要 ---
+    try:
+        url = f"https://minkabu.jp/stock/{code}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Accept-Language': 'ja,en-US;q=0.7,en;q=0.3'
+        }
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        res = requests.get(url, headers=headers, timeout=8, verify=False)
+        res.encoding = 'utf-8'
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            if not info['name']:
+                title = soup.find('title')
+                if title:
+                    info['name'] = title.get_text().split('【')[0].strip()
+
+            # 概要らしき段落を探す（JS警告等は除外）
+            candidates = []
+            for p in soup.find_all(['p', 'div']):
+                txt = p.get_text(" ", strip=True)
+                if _is_valid_summary(txt) and 30 <= len(txt) <= 400:
+                    candidates.append(txt)
+            if candidates:
+                # 最も長いものを採用
+                info['summary'] = max(candidates, key=len)
+                if info['summary']:
+                    return info
+    except Exception:
+        pass
+
+    # --- 3. さらにフォールバック: Yahoo!ファイナンス（日本） ---
+    #     ※現在JSレンダリング必須のため取得できないことが多い。
+    #       JS警告文などの無効テキストは _is_valid_summary で確実に弾く。
     try:
         url = f"https://finance.yahoo.co.jp/quote/{code}.T/profile"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
-        res = requests.get(url, headers=headers, timeout=5, verify=False)
+        res = requests.get(url, headers=headers, timeout=8, verify=False)
         res.encoding = 'utf-8'
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             title = soup.find('title')
             if title and not info['name']:
                 info['name'] = title.text.split('【')[0].strip()
+
             longest_p = ""
             for p in soup.find_all('p'):
                 txt = p.get_text().strip()
-                if len(txt) > len(longest_p):
+                if _is_valid_summary(txt) and len(txt) > len(longest_p):
                     longest_p = txt
-            if len(longest_p) > 30:
+
+            if _is_valid_summary(longest_p):
                 info['summary'] = longest_p
     except Exception:
         pass
+
+    # 上記すべてで有効な情報が得られなかった場合は空のまま返す
+    # → 呼び出し側 (analyze_ticker) で yfinance の longBusinessSummary に自然にフォールバックする
+    if not _is_valid_summary(info.get('summary', '')):
+        info['summary'] = ""
 
     return info
 
