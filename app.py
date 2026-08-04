@@ -572,7 +572,15 @@ def analyze_ticker(code):
         result["error"] = f"Yahooファイナンスからのデータ取得に失敗しました（エラー: {str(e)}）"
         return result
 
-    if hist is None or hist.empty or len(hist) < 60:
+    if hist is None or hist.empty:
+        result["error"] = "株価データが取得できませんでした。"
+        return result
+
+    # 直近データがまだ確定しておらずOpen/High/Low/CloseがNaNの場合があるため除外する
+    # （取引時間中〜終値確定前にYahoo Financeから取得すると最終行がNaNになることがある）
+    hist = hist.dropna(subset=['Open', 'High', 'Low', 'Close'])
+
+    if hist.empty or len(hist) < 60:
         result["error"] = "株価データが十分に取得できませんでした。"
         return result
 
