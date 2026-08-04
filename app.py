@@ -634,16 +634,83 @@ def analyze_ticker(code):
 # ================================================================
 # UI
 # ================================================================
+
+if 'analyze_code' not in st.session_state:
+    st.session_state['analyze_code'] = None
+if 'watchlist_df' not in st.session_state:
+    st.session_state['watchlist_df'] = None
+
+# ---------------- CSV買い銘柄リスト ----------------
+st.markdown("### 📂 買い銘柄リストから選択（CSV）")
+st.caption("1列目に銘柄コード、2列目に銘柄名があるCSVをアップロードしてください（例: code,name）。銘柄をクリックすると、その場ですぐ分析します。")
+
+uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"], label_visibility="collapsed")
+
+if uploaded_file is not None:
+    try:
+        wl_df = pd.read_csv(uploaded_file, dtype=str)
+        wl_df = wl_df.dropna(how="all")
+
+        # 列名の揺れに対応（code列・name列を自動推定）
+        code_col, name_col = None, None
+        for c in wl_df.columns:
+            cl = str(c).strip().lower()
+            if code_col is None and cl in ["code", "コード", "銘柄コード", "証券コード"]:
+                code_col = c
+            if name_col is None and cl in ["name", "名称", "銘柄名", "会社名"]:
+                name_col = c
+        if code_col is None:
+            code_col = wl_df.columns[0]
+        if name_col is None and len(wl_df.columns) > 1:
+            name_col = wl_df.columns[1]
+
+        # コードを文字列として正規化（4091.0のような表記を防ぐ）
+        wl_df[code_col] = wl_df[code_col].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+
+        st.session_state['watchlist_df'] = wl_df
+        st.session_state['watchlist_code_col'] = code_col
+        st.session_state['watchlist_name_col'] = name_col
+        st.success(f"✅ {len(wl_df)}銘柄を読み込みました")
+    except Exception as e:
+        st.error(f"CSVの読み込みに失敗しました: {e}")
+
+if st.session_state.get('watchlist_df') is not None:
+    wl_df = st.session_state['watchlist_df']
+    code_col = st.session_state['watchlist_code_col']
+    name_col = st.session_state.get('watchlist_name_col')
+
+    n_cols = 4
+    rows = list(wl_df.iterrows())
+    for i in range(0, len(rows), n_cols):
+        cols = st.columns(n_cols)
+        for j, (idx, row) in enumerate(rows[i:i + n_cols]):
+            c_code = str(row[code_col]).strip()
+            c_name = str(row[name_col]).strip() if name_col else ""
+            label = f"🔍 {c_code} {c_name}".strip()
+            with cols[j]:
+                if st.button(label, key=f"wl_btn_{idx}", use_container_width=True):
+                    st.session_state['analyze_code'] = c_code
+
+st.markdown("---")
+
+# ---------------- 手動入力 ----------------
 col_input, col_btn, _ = st.columns([2, 1, 3])
 with col_input:
-    code = st.text_input("銘柄コードを入力", placeholder="例：7203", max_chars=6)
+    manual_code = st.text_input("銘柄コードを入力（手動）", placeholder="例：7203", max_chars=6)
 with col_btn:
     st.markdown("<br>", unsafe_allow_html=True)
     run = st.button("🔍 分析を実行", type="primary", use_container_width=True)
 
-if run and code:
+if run and manual_code:
+    st.session_state['analyze_code'] = manual_code.strip()
+elif run and not manual_code:
+    st.warning("⚠️ 銘柄コードを入力してください。")
+
+code = st.session_state.get('analyze_code')
+
+if code:
     with st.spinner(f"「{code}」の最新データを収集中..."):
-        r = analyze_ticker(code.strip())
+        r = analyze_ticker(code)
 
     if "error" in r:
         st.error(r["error"])
@@ -831,6 +898,3 @@ if run and code:
             st.write("ボリンジャーバンドの-2σ（青点線の下限）や、RSIが30を下回るタイミングが逆張りの狙い目となります。")
             
         st.caption(f"更新日時: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}  |  情報提供元: 株探 / Yahoo Finance / みんかぶ")
-
-elif run and not code:
-    st.warning("⚠️ 銘柄コードを入力してください。")
