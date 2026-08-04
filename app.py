@@ -665,6 +665,8 @@ if 'analyze_code' not in st.session_state:
     st.session_state['analyze_code'] = None
 if 'watchlist_df' not in st.session_state:
     st.session_state['watchlist_df'] = None
+if 'batch_results' not in st.session_state:
+    st.session_state['batch_results'] = None
 
 # ---------------- CSV買い銘柄リスト ----------------
 st.markdown("### 📂 買い銘柄リストから選択（CSV）")
@@ -716,6 +718,69 @@ if st.session_state.get('watchlist_df') is not None:
             with cols[j]:
                 if st.button(label, key=f"wl_btn_{idx}", use_container_width=True):
                     st.session_state['analyze_code'] = c_code
+
+    st.markdown("")
+    if st.button("📊 一括分析してランキング表示", type="secondary", use_container_width=True):
+        results = []
+        progress = st.progress(0, text="分析を開始します...")
+        total = len(rows)
+        for i, (idx, row) in enumerate(rows):
+            c_code = str(row[code_col]).strip()
+            c_name = str(row[name_col]).strip() if name_col else ""
+            progress.progress((i + 1) / total, text=f"分析中: {c_code} {c_name} ({i + 1}/{total})")
+            try:
+                res = analyze_ticker(c_code)
+                if "error" in res:
+                    results.append({
+                        "code": c_code, "name": c_name, "momentum": None,
+                        "current_price": None, "sim_buy": None, "rsi": None,
+                        "error": res["error"]
+                    })
+                else:
+                    results.append({
+                        "code": c_code,
+                        "name": res.get("name") or c_name,
+                        "momentum": res["scores"]["momentum"],
+                        "current_price": res["current_price"],
+                        "sim_buy": res["sim_buy"],
+                        "rsi": res["rsi"],
+                        "error": None
+                    })
+            except Exception as e:
+                results.append({
+                    "code": c_code, "name": c_name, "momentum": None,
+                    "current_price": None, "sim_buy": None, "rsi": None,
+                    "error": f"分析エラー: {e}"
+                })
+        progress.empty()
+        st.session_state['batch_results'] = results
+
+if st.session_state.get('batch_results'):
+    st.markdown("### 🏆 逆張りチャンス ランキング")
+    st.caption("逆張りチャンススコアが高い順に並んでいます。銘柄をクリックすると詳細分析に切り替わります。")
+
+    valid = [r for r in st.session_state['batch_results'] if r["momentum"] is not None]
+    invalid = [r for r in st.session_state['batch_results'] if r["momentum"] is None]
+    valid_sorted = sorted(valid, key=lambda r: r["momentum"], reverse=True)
+
+    for rank, r in enumerate(valid_sorted, start=1):
+        rc1, rc2, rc3, rc4, rc5 = st.columns([0.6, 2.2, 1, 1, 1.2])
+        with rc1:
+            st.markdown(f"**#{rank}**")
+        with rc2:
+            if st.button(f"{r['code']} {r['name']}", key=f"rank_btn_{r['code']}", use_container_width=True):
+                st.session_state['analyze_code'] = r['code']
+        with rc3:
+            st.markdown(f"スコア **{r['momentum']:.1f}**/10")
+        with rc4:
+            st.markdown(f"RSI {r['rsi']:.1f}")
+        with rc5:
+            st.markdown(f"¥{r['current_price']:,.0f}")
+
+    if invalid:
+        with st.expander(f"⚠️ 分析できなかった銘柄（{len(invalid)}件）"):
+            for r in invalid:
+                st.caption(f"{r['code']} {r['name']}: {r['error']}")
 
 st.markdown("---")
 
