@@ -350,12 +350,37 @@ def calculate_bb(data, window=25, num_std=2):
 def safe_get(d, key, default=None):
     try:
         v = d.get(key, default)
-        return default if v is None else v
+        if v is None:
+            return default
+        try:
+            # pandasのNA/NaNや、np.isnanが使えない型を安全に判定する
+            if pd.isna(v):
+                return default
+        except (TypeError, ValueError):
+            pass
+        return v
     except Exception:
         return default
 
-def fmt_pct(x, digits=1): return "—" if x is None or np.isnan(x) else f"{x*100:.{digits}f}%"
-def fmt_num(x, digits=1): return "—" if x is None or np.isnan(x) else f"{x:,.{digits}f}"
+def _to_finite_float(x):
+    """xを安全にfloatへ変換する。None/NaN/変換不可なら None を返す。"""
+    if x is None:
+        return None
+    try:
+        fx = float(x)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(fx):
+        return None
+    return fx
+
+def fmt_pct(x, digits=1):
+    fx = _to_finite_float(x)
+    return "—" if fx is None else f"{fx*100:.{digits}f}%"
+
+def fmt_num(x, digits=1):
+    fx = _to_finite_float(x)
+    return "—" if fx is None else f"{fx:,.{digits}f}"
 
 def create_candlestick_chart(hist):
     fig = go.Figure()
@@ -508,7 +533,8 @@ def get_performance_trend(code):
 
 
 def calc_score(val, v_min, v_max, reverse=False):
-    if val is None or np.isnan(val): return 5
+    val = _to_finite_float(val)
+    if val is None: return 5
     if reverse:
         s = 10 - (val - v_min) / (v_max - v_min) * 10
     else:
