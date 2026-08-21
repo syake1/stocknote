@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import requests
 import re
+from io import StringIO
 from bs4 import BeautifulSoup
 import plotly.graph_objects as go
 from datetime import datetime
@@ -661,6 +662,57 @@ def analyze_ticker(code):
 # UI
 # ================================================================
 
+ANTI_REPOSITORY_CONTENTS = "https://api.github.com/repos/syake1/anti-trading-system/contents"
+
+
+def normalize_watchlist(wl_df):
+    """Normalize either the linked anti CSV or a manually uploaded CSV."""
+    wl_df = wl_df.dropna(how="all").copy()
+    code_col, name_col = None, None
+    for c in wl_df.columns:
+        cl = str(c).strip().lower()
+        if code_col is None and cl in ["code", "コード", "銘柄コード", "証券コード"]:
+            code_col = c
+        if name_col is None and cl in ["name", "名称", "銘柄名", "会社名"]:
+            name_col = c
+    if code_col is None:
+        code_col = wl_df.columns[0]
+    if name_col is None and len(wl_df.columns) > 1:
+        name_col = wl_df.columns[1]
+    wl_df[code_col] = wl_df[code_col].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    return wl_df, code_col, name_col
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_latest_anti_candidates():
+    """Load the newest persisted daily candidates from anti-trading-system."""
+    response = requests.get(ANTI_REPOSITORY_CONTENTS, timeout=20)
+    response.raise_for_status()
+    files = [item for item in response.json()
+             if re.fullmatch(r"anti_candidates_\d{8}\.csv", str(item.get("name", "")))]
+    if not files:
+        raise ValueError("anti-trading-systemに候補CSVがありません")
+    latest = max(files, key=lambda item: item["name"])
+    csv_response = requests.get(latest["download_url"], timeout=30)
+    csv_response.raise_for_status()
+    frame = pd.read_csv(StringIO(csv_response.content.decode("utf-8-sig")), dtype=str)
+    if "ランク" in frame.columns:
+        frame = frame[frame["ランク"].isin(["S", "A"])].copy()
+    score_column = "総合調整後スコア" if "総合調整後スコア" in frame.columns else "スコア"
+    if score_column in frame.columns:
+        frame["_連携順位点"] = pd.to_numeric(frame[score_column], errors="coerce")
+        frame = frame.sort_values("_連携順位点", ascending=False).drop(columns="_連携順位点")
+    frame = frame.head(50).reset_index(drop=True)
+    return latest["name"], frame
+
+
+def store_watchlist(frame):
+    frame, code_col, name_col = normalize_watchlist(frame)
+    st.session_state['watchlist_df'] = frame
+    st.session_state['watchlist_code_col'] = code_col
+    st.session_state['watchlist_name_col'] = name_col
+    return len(frame)
+
 if 'analyze_code' not in st.session_state:
     st.session_state['analyze_code'] = None
 if 'watchlist_df' not in st.session_state:
@@ -668,37 +720,36 @@ if 'watchlist_df' not in st.session_state:
 if 'batch_results' not in st.session_state:
     st.session_state['batch_results'] = None
 
-# ---------------- CSV買い銘柄リスト ----------------
-st.markdown("### 📂 買い銘柄リストから選択（CSV）")
-st.caption("1列目に銘柄コード、2列目に銘柄名があるCSVをアップロードしてください（例: code,name）。銘柄をクリックすると、その場ですぐ分析します。")
+# ---------------- anti-trading-system連携 / CSV買い銘柄リスト ----------------
+st.markdown("### 🔗 anti-trading-system 買い候補連携")
+st.caption("最新の日足一次買い候補を自動取得します。必要な場合は手元のCSVへ切り替えることもできます。")
+
+if st.session_state.get('watchlist_df') is None:
+    try:
+        linked_name, linked_frame = load_latest_anti_candidates()
+        count = store_watchlist(linked_frame)
+        st.success(f"✅ {linked_name} から {count}銘柄を自動連携しました")
+    except Exception as e:
+        st.warning(f"自動連携できませんでした: {e}")
+
+if st.button("🔄 anti-trading-systemの最新候補へ更新"):
+    try:
+        load_latest_anti_candidates.clear()
+        linked_name, linked_frame = load_latest_anti_candidates()
+        count = store_watchlist(linked_frame)
+        st.success(f"✅ {linked_name} から {count}銘柄へ更新しました")
+    except Exception as e:
+        st.error(f"最新候補の取得に失敗しました: {e}")
+
+st.markdown("#### 手元のCSVを使用する場合")
+st.caption("1列目に銘柄コード、2列目に銘柄名があるCSVをアップロードしてください。")
 
 uploaded_file = st.file_uploader("CSVファイルをアップロード", type=["csv"], label_visibility="collapsed")
 
 if uploaded_file is not None:
     try:
-        wl_df = pd.read_csv(uploaded_file, dtype=str)
-        wl_df = wl_df.dropna(how="all")
-
-        # 列名の揺れに対応（code列・name列を自動推定）
-        code_col, name_col = None, None
-        for c in wl_df.columns:
-            cl = str(c).strip().lower()
-            if code_col is None and cl in ["code", "コード", "銘柄コード", "証券コード"]:
-                code_col = c
-            if name_col is None and cl in ["name", "名称", "銘柄名", "会社名"]:
-                name_col = c
-        if code_col is None:
-            code_col = wl_df.columns[0]
-        if name_col is None and len(wl_df.columns) > 1:
-            name_col = wl_df.columns[1]
-
-        # コードを文字列として正規化（4091.0のような表記を防ぐ）
-        wl_df[code_col] = wl_df[code_col].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-
-        st.session_state['watchlist_df'] = wl_df
-        st.session_state['watchlist_code_col'] = code_col
-        st.session_state['watchlist_name_col'] = name_col
-        st.success(f"✅ {len(wl_df)}銘柄を読み込みました")
+        count = store_watchlist(pd.read_csv(uploaded_file, dtype=str))
+        st.success(f"✅ {count}銘柄を読み込みました")
     except Exception as e:
         st.error(f"CSVの読み込みに失敗しました: {e}")
 
