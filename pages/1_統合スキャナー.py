@@ -7,9 +7,13 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from stocknote_universe import delete_universe as delete_saved_universe
+from stocknote_universe import load_universe as load_saved_universe
+from stocknote_universe import save_universe as save_saved_universe
+
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
-st.caption("SBIなどのCSVを母集団にして、買い候補・空売り候補を同時抽出。上位候補はテクニカル社員＋ファンダメンタル社員で再評価します。")
+st.caption("SBIなどのCSVを一度登録すれば、差し替えるまで保存して自動分析します。買い候補・空売り候補・AI社員会議をStocknote内でまとめて確認できます。")
 
 
 def normalize_code(value):
@@ -63,20 +67,16 @@ def read_one_csv(uploaded):
 
     out = pd.DataFrame()
     out["コード"] = df[code_col].map(normalize_code)
-    if name_col:
-        out["銘柄名"] = df[name_col].fillna("").astype(str).str.strip()
-    else:
-        out["銘柄名"] = ""
+    out["銘柄名"] = df[name_col].fillna("").astype(str).str.strip() if name_col else ""
     out["入力CSV"] = uploaded.name
     return out[out["コード"] != ""].reset_index(drop=True)
 
 
-def load_universe(files):
+def merge_uploaded(files):
     frames = [read_one_csv(f) for f in files]
     if not frames:
         return pd.DataFrame(columns=["コード", "銘柄名", "入力CSV"])
-    df = pd.concat(frames, ignore_index=True)
-    return df.drop_duplicates("コード", keep="first").reset_index(drop=True)
+    return pd.concat(frames, ignore_index=True).drop_duplicates("コード", keep="first").reset_index(drop=True)
 
 
 def rsi14(close):
@@ -118,14 +118,9 @@ def one_download(code):
 def technical_scores(code, name, hist):
     if hist is None or hist.empty or "Close" not in hist.columns:
         return {"コード": code, "銘柄名": name or code, "error": "株価データなし"}
+
     hist = hist.copy()
-    close = pd.to_numeric(hist["Close"], errors="coerce")
-    high = pd.to_numeric(hist.get("High"), errors="coerce")
-    low = pd.to_numeric(hist.get("Low"), errors="coerce")
-    open_ = pd.to_numeric(hist.get("Open"), errors="coerce")
-    volume = pd.to_numeric(hist.get("Volume"), errors="coerce")
-    valid = close.notna()
-    close = close[valid]
+    close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
     if len(close) < 80:
         return {"コード": code, "銘柄名": name or code, "error": "履歴不足"}
 
@@ -136,9 +131,7 @@ def technical_scores(code, name, hist):
     std25 = close.rolling(25).std()
     bb_upper = ma25 + 2 * std25
     bb_lower = ma25 - 2 * std25
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
 
     px = float(close.iloc[-1])
@@ -151,25 +144,29 @@ def technical_scores(code, name, hist):
     md = float(macd.iloc[-1])
     sg = float(signal.iloc[-1])
 
-    if volume is not None and len(volume) >= 25:
-        v = volume.loc[valid].tail(len(close))
-        v20 = float(v.iloc[-21:-1].mean()) if len(v) >= 21 else np.nan
-        vr = float(v.iloc[-1] / v20) if v20 and np.isfinite(v20) and v20 > 0 else 1.0
-    else:
-        vr = 1.0
+    volume = pd.to_numeric(hist.get("Volume"), errors="coerce") if "Volume" in hist else None
+    vr = 1.0
+    if volume is not None:
+        v = volume.dropna()
+        if len(v) >= 21:
+            avg = float(v.iloc[-21:-1].mean())
+            if avg > 0:
+                vr = float(v.iloc[-1] / avg)
 
-    prev_bear = False
     reversal = False
-    upper_wick = False
-    if open_ is not None and high is not None and low is not None:
-        o = open_.loc[valid].tail(len(close))
-        h = high.loc[valid].tail(len(close))
-        l = low.loc[valid].tail(len(close))
-        if len(o) >= 2 and pd.notna(o.iloc[-1]) and pd.notna(o.iloc[-2]):
-            prev_bear = close.iloc[-2] < o.iloc[-2]
-            reversal = bool(prev_bear and close.iloc[-1] > o.iloc[-1] and close.iloc[-1] >= o.iloc[-2] and o.iloc[-1] <= close.iloc[-2])
-            body = abs(close.iloc[-1] - o.iloc[-1])
-            upper_wick = bool((h.iloc[-1] - max(close.iloc[-1], o.iloc[-1])) > max(body * 1.5, px * 0.003))
+    upper_wick_bear = False
+    if all(c in hist.columns for c in ["Open", "High"]):
+        o = pd.to_numeric(hist["Open"], errors="coerce").dropna()
+        h = pd.to_numeric(hist["High"], errors="coerce").dropna()
+        if len(o) >= 2 and len(h) >= 1:
+            cprev = float(close.iloc[-2])
+            oprev = float(o.iloc[-2])
+            cnow = float(close.iloc[-1])
+            onow = float(o.iloc[-1])
+            reversal = bool(cprev < oprev and cnow > onow and cnow >= oprev and onow <= cprev)
+            body = abs(cnow - onow)
+            upper_wick = float(h.iloc[-1]) - max(cnow, onow)
+            upper_wick_bear = bool(cnow < onow and upper_wick > max(body * 1.5, px * 0.003))
 
     buy_rsi = float(np.clip((55 - rv) / 30 * 35, 0, 35))
     buy_bb = 25.0 if px <= blo * 1.02 else float(np.clip((m25 - px) / max(m25 - blo, 1e-9) * 20, 0, 20))
@@ -188,17 +185,26 @@ def technical_scores(code, name, hist):
         short_trend += 5.0
     short_macd = 8.0 if md < sg else 2.0
     short_volume = float(np.clip((vr - 0.8) * 6, 0, 8))
-    short_candle = 12.0 if upper_wick and close.iloc[-1] < o.iloc[-1] else 0.0
+    short_candle = 12.0 if upper_wick_bear else 0.0
     short_score = float(np.clip(short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle, 0, 100))
 
     return {
-        "コード": code, "銘柄名": name or code,
-        "現在値": px, "RSI14": rv, "出来高倍率": vr,
-        "MA25": m25, "MA75": m75, "MA200": m200,
-        "BB下限": blo, "BB上限": bup,
-        "MACD": md, "MACDシグナル": sg,
-        "包み陽線": reversal, "上ヒゲ陰線": short_candle > 0,
-        "買いスコア": buy_score, "空売りスコア": short_score,
+        "コード": code,
+        "銘柄名": name or code,
+        "現在値": px,
+        "RSI14": rv,
+        "出来高倍率": vr,
+        "MA25": m25,
+        "MA75": m75,
+        "MA200": m200,
+        "BB下限": blo,
+        "BB上限": bup,
+        "MACD": md,
+        "MACDシグナル": sg,
+        "包み陽線": reversal,
+        "上ヒゲ陰線": upper_wick_bear,
+        "買いスコア": buy_score,
+        "空売りスコア": short_score,
         "error": None,
     }
 
@@ -229,10 +235,9 @@ def scan_items(items):
 @st.cache_data(ttl=1800, show_spinner=False)
 def fundamental_employee(code):
     try:
-        tk = yf.Ticker(f"{code}.T")
-        info = tk.info or {}
+        info = yf.Ticker(f"{code}.T").info or {}
     except Exception:
-        return {"score": 50.0, "comment": "ファンダメンタル取得不可", "per": None, "pbr": None, "roe": None, "div": None}
+        return {"score": 50.0, "comment": "ファンダメンタル取得不可"}
 
     def num(key):
         try:
@@ -270,32 +275,28 @@ def fundamental_employee(code):
     if div is not None and div >= 0.03:
         score += 5; notes.append("配当3%以上")
 
-    score = float(np.clip(score, 0, 100))
-    return {"score": score, "comment": "・".join(notes) if notes else "大きな加減点なし", "per": per, "pbr": pbr, "roe": roe, "div": div}
+    return {"score": float(np.clip(score, 0, 100)), "comment": "・".join(notes) if notes else "大きな加減点なし"}
 
 
 def meeting_rows(candidates, side):
     rows = []
     score_key = "買いスコア" if side == "buy" else "空売りスコア"
-    top = sorted(candidates, key=lambda x: x.get(score_key, 0), reverse=True)[:5]
-    for r in top:
+    for r in sorted(candidates, key=lambda x: x.get(score_key, 0), reverse=True)[:5]:
         f = fundamental_employee(r["コード"])
         tech = float(r[score_key])
         if side == "buy":
             final = tech * 0.65 + f["score"] * 0.35
-            fund_view = f["comment"]
+            comment = f["comment"]
         else:
-            # 空売りでは強いファンダは逆風、弱いファンダは追い風として反転利用
-            short_fund = 100 - f["score"]
-            final = tech * 0.75 + short_fund * 0.25
-            fund_view = "強い企業ほど空売りには逆風。" + f["comment"]
+            final = tech * 0.75 + (100 - f["score"]) * 0.25
+            comment = "強い企業ほど空売りには逆風。" + f["comment"]
         rows.append({
             "コード": r["コード"], "銘柄名": r["銘柄名"],
             "テクニカル社員": round(tech, 1),
             "ファンダ社員": round(f["score"], 1),
             "最終評価": round(float(final), 1),
             "RSI14": round(r["RSI14"], 1),
-            "コメント": fund_view,
+            "コメント": comment,
         })
     return pd.DataFrame(rows).sort_values("最終評価", ascending=False, ignore_index=True) if rows else pd.DataFrame()
 
@@ -303,30 +304,61 @@ def meeting_rows(candidates, side):
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
 if "universe" not in st.session_state:
-    st.session_state.universe = None
+    saved, meta = load_saved_universe()
+    st.session_state.universe = saved
+    st.session_state.saved_meta = meta
 
-files = st.file_uploader("CSVをアップロード（複数可）", type=["csv"], accept_multiple_files=True)
+st.markdown("## 📁 SBI CSV母集団")
+saved_meta = st.session_state.get("saved_meta") or {}
+if st.session_state.universe is not None and not st.session_state.universe.empty:
+    saved_at = saved_meta.get("saved_at", "不明")
+    st.success(f"保存済み母集団: {len(st.session_state.universe)}銘柄 / 保存日時: {saved_at}")
+else:
+    st.info("まだ保存済みCSVはありません。最初にSBIのCSVを登録してください。")
+
+files = st.file_uploader("CSVを登録・差し替え（複数可）", type=["csv"], accept_multiple_files=True)
 if files:
     try:
-        universe = load_universe(files)
+        universe = merge_uploaded(files)
+        meta = save_saved_universe(universe, [f.name for f in files])
         st.session_state.universe = universe
-        st.success(f"{len(files)}ファイル・{len(universe)}銘柄を読み込みました。")
-        st.dataframe(universe.head(20), hide_index=True, use_container_width=True)
+        st.session_state.saved_meta = meta
+        st.session_state.scan_results = None
+        st.success(f"{len(files)}ファイル・{len(universe)}銘柄を保存しました。次回から再アップロード不要です。")
     except Exception as exc:
         st.error(str(exc))
 
-if st.session_state.universe is not None and not st.session_state.universe.empty:
-    u = st.session_state.universe
+c1, c2 = st.columns(2)
+with c1:
+    if st.button("🗑️ 登録CSVを削除", use_container_width=True):
+        delete_saved_universe()
+        st.session_state.universe = None
+        st.session_state.saved_meta = None
+        st.session_state.scan_results = None
+        scan_items.clear()
+        st.success("保存済みCSVと古い分析結果を削除しました。")
+        st.rerun()
+with c2:
+    run_now = st.button("🔄 今すぐ再分析", type="primary", use_container_width=True)
+
+u = st.session_state.universe
+if u is not None and not u.empty:
+    with st.expander("保存中の銘柄を確認"):
+        st.dataframe(u.head(100), hide_index=True, use_container_width=True)
+
     items = tuple((r["コード"], r["銘柄名"]) for _, r in u.iterrows())
-    if st.button("🚀 買い・空売りを一括分析", type="primary", use_container_width=True):
-        with st.spinner(f"{len(items)}銘柄を分析中…"):
-            scan_items.clear()
+    auto_needed = st.session_state.scan_results is None
+    if run_now or auto_needed:
+        with st.spinner(f"保存済み{len(items)}銘柄を分析中…"):
+            if run_now:
+                scan_items.clear()
             st.session_state.scan_results = scan_items(items)
 
 if st.session_state.scan_results is not None:
     ok = [r for r in st.session_state.scan_results if not r.get("error")]
     bad = [r for r in st.session_state.scan_results if r.get("error")]
     st.caption(f"分析成功 {len(ok)}銘柄 / 失敗 {len(bad)}銘柄")
+
     if not ok:
         st.error("分析できた銘柄がありません。")
     else:
@@ -353,7 +385,6 @@ if st.session_state.scan_results is not None:
                     st.dataframe(meeting_rows(buy, "buy"), hide_index=True, use_container_width=True)
                     st.markdown("#### 空売り会議")
                     st.dataframe(meeting_rows(short, "short"), hide_index=True, use_container_width=True)
-                    st.caption("AI社員は現時点ではルールベース評価です。最終判断や自動発注は行いません。")
 
     if bad:
         with st.expander(f"⚠️ 分析できなかった銘柄（{len(bad)}件）"):
@@ -361,4 +392,4 @@ if st.session_state.scan_results is not None:
                 st.caption(f"{r.get('コード','')} {r.get('銘柄名','')}: {r.get('error','不明')}")
 
 st.markdown("---")
-st.caption(f"更新: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')} | 株価・ファンダメンタル: Yahoo Finance")
+st.caption(f"更新: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')} | 保存CSVは差し替えるまで継続利用 | 株価・ファンダメンタル: Yahoo Finance")
