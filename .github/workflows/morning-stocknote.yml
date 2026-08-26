@@ -3,7 +3,7 @@ name: Stocknote 朝スキャン
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions cron is UTC. 23:15 UTC = 08:15 JST (Mon-Fri).
+    # 08:15 JST Mon-Fri. GitHub cron is UTC.
     - cron: '15 23 * * 0-4'
 
 permissions:
@@ -14,11 +14,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke-test:
+  morning-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     env:
       TZ: Asia/Tokyo
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      STOCKNOTE_TOP_N: '10'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,15 +34,18 @@ jobs:
       - name: Install dependencies
         run: pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Validate Stocknote source
+      - name: Validate source
+        run: python -m py_compile morning_scan.py stocknote_universe.py stocknote_detail.py stocknote_fundamentals.py
+
+      - name: Check saved SBI universe
         run: |
-          python -m py_compile app.py stocknote_detail.py stocknote_fundamentals.py stocknote_universe.py
+          test -f data/saved_universe.csv || (echo 'ERROR: data/saved_universe.csv is not in the repository. Streamlit local storage is not visible to GitHub Actions.' && exit 2)
           python - <<'PY'
-          import stocknote_universe
-          import stocknote_detail
-          import stocknote_fundamentals
-          print('Stocknote modules loaded successfully')
+          import pandas as pd
+          p='data/saved_universe.csv'
+          d=pd.read_csv(p,dtype=str,encoding='utf-8-sig')
+          print(f'loaded {len(d)} rows from {p}')
           PY
 
-      - name: Report scheduled run
-        run: echo "Stocknote morning workflow completed at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+      - name: Scan and send Discord candidates
+        run: python morning_scan.py
