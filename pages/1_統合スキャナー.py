@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+from stocknote_detail import render_extended_detail
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
@@ -252,7 +253,6 @@ def fundamental_employee(code):
     except Exception:
         pass
 
-    # Yahooのinfoが取れない場合でも財務諸表から売上成長率・営業利益率を補完
     try:
         inc = tk.financials
         if inc is not None and not inc.empty:
@@ -455,6 +455,8 @@ def show_buy_detail(row, market_score):
         st.plotly_chart(rsi_chart(h.tail(180)), use_container_width=True, config={"displayModeBar": False})
     else:
         st.warning("詳細チャート用の株価データを取得できませんでした。")
+
+    render_extended_detail(row["コード"], row, f, final)
 
 
 if "scan_results" not in st.session_state: st.session_state.scan_results = None
