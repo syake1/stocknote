@@ -9,6 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_detail import render_extended_detail
+from stocknote_fundamentals import get_fundamentals
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
@@ -114,7 +115,8 @@ def batch_frame(data, ticker):
 
 def one_download(code, period="14mo", interval="1d"):
     try:
-        h = yf.download(f"{code}.T", period=period, interval=interval, auto_adjust=False, progress=False, threads=False)
+        h = yf.download(f"{code}.T", period=period, interval=interval,
+                        auto_adjust=False, progress=False, threads=False)
         if isinstance(h.columns, pd.MultiIndex):
             h.columns = h.columns.get_level_values(0)
         return h.dropna(how="all")
@@ -131,17 +133,24 @@ def technical_scores(code, name, hist):
         return {"コード": code, "銘柄名": name or code, "error": "履歴不足"}
 
     rsi = rsi14(close)
-    ma25, ma75, ma200 = close.rolling(25).mean(), close.rolling(75).mean(), close.rolling(200).mean()
+    ma25 = close.rolling(25).mean()
+    ma75 = close.rolling(75).mean()
+    ma200 = close.rolling(200).mean()
     std25 = close.rolling(25).std()
-    bb_upper, bb_lower = ma25 + 2 * std25, ma25 - 2 * std25
+    bb_upper = ma25 + 2 * std25
+    bb_lower = ma25 - 2 * std25
     macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
 
-    px, rv = float(close.iloc[-1]), float(rsi.iloc[-1])
-    m25, m75 = float(ma25.iloc[-1]), float(ma75.iloc[-1])
+    px = float(close.iloc[-1])
+    rv = float(rsi.iloc[-1])
+    m25 = float(ma25.iloc[-1])
+    m75 = float(ma75.iloc[-1])
     m200 = float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else np.nan
-    blo, bup = float(bb_lower.iloc[-1]), float(bb_upper.iloc[-1])
-    md, sg = float(macd.iloc[-1]), float(signal.iloc[-1])
+    blo = float(bb_lower.iloc[-1])
+    bup = float(bb_upper.iloc[-1])
+    md = float(macd.iloc[-1])
+    sg = float(signal.iloc[-1])
 
     vr = 1.0
     if "Volume" in hist:
@@ -180,11 +189,13 @@ def technical_scores(code, name, hist):
     short_score = float(np.clip(short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle, 0, 100))
 
     return {
-        "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv, "出来高倍率": vr,
-        "MA25": m25, "MA75": m75, "MA200": m200, "BB下限": blo, "BB上限": bup,
-        "MACD": md, "MACDシグナル": sg, "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear,
+        "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv,
+        "出来高倍率": vr, "MA25": m25, "MA75": m75, "MA200": m200,
+        "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
+        "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear,
         "買いスコア": buy_score, "空売りスコア": short_score,
-        "買い内訳": {"RSI": buy_rsi, "BB": buy_bb, "トレンド": buy_trend, "MACD": buy_macd, "出来高": buy_volume, "ローソク足": buy_candle},
+        "買い内訳": {"RSI": buy_rsi, "BB": buy_bb, "トレンド": buy_trend,
+                     "MACD": buy_macd, "出来高": buy_volume, "ローソク足": buy_candle},
         "error": None,
     }
 
@@ -198,7 +209,8 @@ def scan_items(items):
         batch = items[start:start + 20]
         tickers = [f"{c}.T" for c, _ in batch]
         try:
-            data = yf.download(tickers, period="14mo", group_by="ticker", auto_adjust=False, progress=False, threads=True)
+            data = yf.download(tickers, period="14mo", group_by="ticker",
+                               auto_adjust=False, progress=False, threads=True)
         except Exception:
             data = pd.DataFrame()
         for code, name in batch:
@@ -212,97 +224,9 @@ def scan_items(items):
     return results
 
 
-def _num(v):
-    try:
-        f = float(v)
-        return f if np.isfinite(f) else None
-    except Exception:
-        return None
-
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def fundamental_employee(code):
-    tk = yf.Ticker(f"{code}.T")
-    try:
-        info = tk.info or {}
-    except Exception:
-        info = {}
-
-    per = _num(info.get("trailingPE"))
-    pbr = _num(info.get("priceToBook"))
-    roe = _num(info.get("returnOnEquity"))
-    opm = _num(info.get("operatingMargins"))
-    growth = _num(info.get("revenueGrowth"))
-    div = _num(info.get("dividendYield"))
-    if div is not None and div > 1:
-        div /= 100
-
-    equity_ratio = None
-    try:
-        bs = tk.balance_sheet
-        if bs is not None and not bs.empty:
-            eq = assets = None
-            for label in ["Stockholders Equity", "Total Stockholder Equity", "StockholdersEquity"]:
-                if label in bs.index:
-                    eq = _num(bs.loc[label].iloc[0]); break
-            for label in ["Total Assets", "TotalAssets"]:
-                if label in bs.index:
-                    assets = _num(bs.loc[label].iloc[0]); break
-            if eq is not None and assets not in (None, 0):
-                equity_ratio = eq / assets
-    except Exception:
-        pass
-
-    try:
-        inc = tk.financials
-        if inc is not None and not inc.empty:
-            if growth is None:
-                for label in ["Total Revenue", "TotalRevenue"]:
-                    if label in inc.index and len(inc.columns) >= 2:
-                        cur, prev = _num(inc.loc[label].iloc[0]), _num(inc.loc[label].iloc[1])
-                        if cur is not None and prev not in (None, 0):
-                            growth = cur / prev - 1
-                        break
-            if opm is None:
-                rev = op = None
-                for label in ["Total Revenue", "TotalRevenue"]:
-                    if label in inc.index:
-                        rev = _num(inc.loc[label].iloc[0]); break
-                for label in ["Operating Income", "OperatingIncome"]:
-                    if label in inc.index:
-                        op = _num(inc.loc[label].iloc[0]); break
-                if rev not in (None, 0) and op is not None:
-                    opm = op / rev
-    except Exception:
-        pass
-
-    score = 50.0
-    notes = []
-    if per is not None:
-        if 0 < per <= 15: score += 8; notes.append("PER割安")
-        elif per >= 35: score -= 7; notes.append("PER高め")
-    if pbr is not None:
-        if 0 < pbr <= 1.2: score += 7; notes.append("PBR低め")
-        elif pbr >= 4: score -= 6; notes.append("PBR高め")
-    if roe is not None:
-        if roe >= 0.10: score += 10; notes.append("ROE良好")
-        elif roe < 0: score -= 12; notes.append("ROEマイナス")
-    if equity_ratio is not None:
-        if equity_ratio >= 0.50: score += 6; notes.append("自己資本比率良好")
-        elif equity_ratio < 0.20: score -= 6; notes.append("自己資本比率低め")
-    if opm is not None:
-        if opm >= 0.10: score += 8; notes.append("営業利益率良好")
-        elif opm < 0: score -= 10; notes.append("営業赤字")
-    if growth is not None:
-        if growth >= 0.05: score += 8; notes.append("増収")
-        elif growth < 0: score -= 7; notes.append("減収")
-    if div is not None and div >= 0.03:
-        score += 5; notes.append("配当3%以上")
-
-    available = sum(v is not None for v in [per, pbr, roe, equity_ratio, opm, growth, div])
-    comment = "・".join(notes) if notes else ("大きな加減点なし" if available else "ファンダメンタル取得不可")
-    return {"score": float(np.clip(score, 0, 100)), "comment": comment, "per": per, "pbr": pbr,
-            "roe": roe, "equity_ratio": equity_ratio, "opm": opm, "growth": growth, "div": div, "available": available}
+    return get_fundamentals(code)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -310,7 +234,8 @@ def market_employee_score():
     data = {}
     for name, symbol in MARKETS.items():
         try:
-            h = yf.download(symbol, period="2mo", interval="1d", auto_adjust=False, progress=False, threads=False)
+            h = yf.download(symbol, period="2mo", interval="1d", auto_adjust=False,
+                            progress=False, threads=False)
             if isinstance(h.columns, pd.MultiIndex):
                 h.columns = h.columns.get_level_values(0)
             c = pd.to_numeric(h.get("Close"), errors="coerce").dropna()
@@ -318,7 +243,8 @@ def market_employee_score():
                 data[name] = {"now": float(c.iloc[-1]), "d5": float((c.iloc[-1] / c.iloc[-6] - 1) * 100)}
         except Exception:
             pass
-    score = 50.0; notes = []
+    score = 50.0
+    notes = []
     for name in ["S&P500", "NASDAQ", "日経平均", "日経225先物"]:
         v = data.get(name, {}).get("d5")
         if v is not None:
@@ -334,7 +260,8 @@ def market_employee_score():
         elif vix >= 22: score -= 8; notes.append("VIXやや高い")
         elif vix <= 16: score += 5; notes.append("VIX低位")
     oil = data.get("WTI原油", {}).get("d5")
-    if oil is not None and oil >= 8: score -= 5; notes.append("原油急騰")
+    if oil is not None and oil >= 8:
+        score -= 5; notes.append("原油急騰")
     fx = data.get("ドル円", {}).get("d5")
     if fx is not None:
         if 0.5 <= fx <= 3: score += 3; notes.append("円安傾向")
@@ -359,9 +286,14 @@ def meeting_rows(candidates, side, market_score):
     score_key = "買いスコア" if side == "buy" else "空売りスコア"
     for r in sorted(candidates, key=lambda x: x.get(score_key, 0), reverse=True)[:5]:
         final, f = combined_score(r, side, market_score)
-        rows.append({"コード": r["コード"], "銘柄名": r["銘柄名"], "テクニカル社員": round(float(r[score_key]), 1),
-                     "ファンダ社員": round(f["score"], 1), "市場環境社員": round(market_score if side == "buy" else 100-market_score, 1),
-                     "最終評価": round(final, 1), "RSI14": round(r["RSI14"], 1), "コメント": f["comment"]})
+        rows.append({
+            "コード": r["コード"], "銘柄名": r["銘柄名"],
+            "テクニカル社員": round(float(r[score_key]), 1),
+            "ファンダ社員": round(f["score"], 1),
+            "市場環境社員": round(market_score if side == "buy" else 100 - market_score, 1),
+            "最終評価": round(final, 1), "RSI14": round(r["RSI14"], 1),
+            "コメント": f["comment"],
+        })
     return pd.DataFrame(rows).sort_values("最終評価", ascending=False, ignore_index=True) if rows else pd.DataFrame()
 
 
@@ -379,54 +311,66 @@ def detail_history(code):
         return pd.DataFrame()
     h = h.copy()
     c = pd.to_numeric(h["Close"], errors="coerce")
-    h["MA25"] = c.rolling(25).mean(); h["MA75"] = c.rolling(75).mean(); h["MA200"] = c.rolling(200).mean()
-    std = c.rolling(25).std(); h["BB上限"] = h["MA25"] + 2*std; h["BB下限"] = h["MA25"] - 2*std
+    h["MA25"] = c.rolling(25).mean()
+    h["MA75"] = c.rolling(75).mean()
+    h["MA200"] = c.rolling(200).mean()
+    std = c.rolling(25).std()
+    h["BB上限"] = h["MA25"] + 2 * std
+    h["BB下限"] = h["MA25"] - 2 * std
     h["RSI14"] = rsi14(c)
     return h
 
 
 def price_chart(h):
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=h.index, open=h["Open"], high=h["High"], low=h["Low"], close=h["Close"], name="株価",
-                                 increasing_line_color="#ef4444", decreasing_line_color="#3b82f6"))
-    for col, label in [("MA25", "MA25"), ("MA75", "MA75"), ("MA200", "MA200"), ("BB上限", "+2σ"), ("BB下限", "-2σ")]:
+    fig.add_trace(go.Candlestick(
+        x=h.index, open=h["Open"], high=h["High"], low=h["Low"], close=h["Close"], name="株価",
+        increasing_line_color="#ef4444", decreasing_line_color="#3b82f6"))
+    for col, label in [("MA25", "MA25"), ("MA75", "MA75"), ("MA200", "MA200"),
+                       ("BB上限", "+2σ"), ("BB下限", "-2σ")]:
         fig.add_trace(go.Scatter(x=h.index, y=h[col], mode="lines", name=label))
-    fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin=dict(l=10,r=10,t=30,b=10), legend=dict(orientation="h"))
+    fig.update_layout(height=520, xaxis_rangeslider_visible=False,
+                      margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
     return fig
 
 
 def rsi_chart(h):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=h.index, y=h["RSI14"], mode="lines", name="RSI14"))
-    fig.add_hline(y=30, line_dash="dash"); fig.add_hline(y=70, line_dash="dash")
-    fig.update_layout(height=260, yaxis_range=[0,100], margin=dict(l=10,r=10,t=30,b=10))
+    fig.add_hline(y=30, line_dash="dash")
+    fig.add_hline(y=70, line_dash="dash")
+    fig.update_layout(height=260, yaxis_range=[0, 100], margin=dict(l=10, r=10, t=30, b=10))
     return fig
 
 
 def score_radar(row, f, market_score):
     tech_parts = row.get("買い内訳", {})
-    vals = [float(row["買いスコア"]), float(f["score"]), float(market_score),
-            min(100.0, float(tech_parts.get("RSI",0))/35*100), min(100.0, float(tech_parts.get("BB",0))/25*100)]
+    vals = [
+        float(row["買いスコア"]), float(f["score"]), float(market_score),
+        min(100.0, float(tech_parts.get("RSI", 0)) / 35 * 100),
+        min(100.0, float(tech_parts.get("BB", 0)) / 25 * 100),
+    ]
     cats = ["逆張りテクニカル", "ファンダメンタル", "市場環境", "RSI反発度", "BB押し目度"]
     fig = go.Figure(go.Scatterpolar(r=vals + [vals[0]], theta=cats + [cats[0]], fill="toself", name="評価"))
-    fig.update_layout(height=360, polar=dict(radialaxis=dict(visible=True, range=[0,100])), showlegend=False, margin=dict(l=40,r=40,t=30,b=30))
+    fig.update_layout(height=360, polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                      showlegend=False, margin=dict(l=40, r=40, t=30, b=30))
     return fig
 
 
 def show_buy_detail(row, market_score):
     final, f = combined_score(row, "buy", market_score)
     st.markdown(f"### {row['コード']} {row['銘柄名']} 総合分析")
-    a,b,c,d = st.columns(4)
+    a, b, c, d = st.columns(4)
     a.metric("逆張りテクニカル", f"{row['買いスコア']:.1f}/100")
     b.metric("ファンダメンタル", f"{f['score']:.1f}/100")
     c.metric("市場環境", f"{market_score:.1f}/100")
     d.metric("総合評価", f"{final:.1f}/100")
     st.caption("総合評価 = テクニカル50% + ファンダメンタル35% + 市場環境15%")
 
-    left, right = st.columns([3,2])
+    left, right = st.columns([3, 2])
     with left:
         st.markdown("#### 📊 テクニカル詳細")
-        t1,t2,t3,t4,t5,t6 = st.columns(6)
+        t1, t2, t3, t4, t5, t6 = st.columns(6)
         t1.metric("RSI14", f"{row['RSI14']:.1f}")
         t2.metric("出来高倍率", f"{row['出来高倍率']:.2f}")
         t3.metric("MA25", f"¥{row['MA25']:,.0f}")
@@ -436,19 +380,29 @@ def show_buy_detail(row, market_score):
         st.write("包み陽線: " + ("✅" if row.get("包み陽線") else "—"))
     with right:
         st.markdown("#### 🎯 逆張りチャンス評価")
-        st.plotly_chart(score_radar(row, f, market_score), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(score_radar(row, f, market_score), use_container_width=True,
+                        config={"displayModeBar": False})
 
     st.markdown("#### 💰 ファンダメンタル分析")
-    f1,f2,f3,f4,f5,f6,f7 = st.columns(7)
-    f1.metric("PER", fmt_num(f["per"], "倍")); f2.metric("PBR", fmt_num(f["pbr"], "倍"))
-    f3.metric("ROE", fmt_pct(f["roe"])); f4.metric("自己資本比率", fmt_pct(f["equity_ratio"]))
-    f5.metric("営業利益率", fmt_pct(f["opm"])); f6.metric("売上成長率", fmt_pct(f["growth"])); f7.metric("配当利回り", fmt_pct(f["div"]))
-    if f["available"] == 0:
-        st.warning("Yahoo Financeからこの銘柄のファンダメンタルを取得できませんでした。取得不能を50点として扱い、数字を推測して埋めてはいません。")
+    f1, f2, f3, f4, f5, f6, f7 = st.columns(7)
+    f1.metric("PER", fmt_num(f["per"], "倍"))
+    f2.metric("PBR", fmt_num(f["pbr"], "倍"))
+    f3.metric("ROE", fmt_pct(f["roe"]))
+    f4.metric("自己資本比率", fmt_pct(f["equity_ratio"]))
+    f5.metric("営業利益率", fmt_pct(f["opm"]))
+    f6.metric("売上成長率", fmt_pct(f["growth"]))
+    f7.metric("配当利回り", fmt_pct(f["div"]))
     st.write("ファンダ社員所見: " + f["comment"])
+    if f.get("sources"):
+        with st.expander("ファンダメンタルの取得・計算元"):
+            labels = {"per":"PER", "pbr":"PBR", "roe":"ROE", "equity_ratio":"自己資本比率",
+                      "opm":"営業利益率", "growth":"売上成長率", "div":"配当利回り"}
+            for key, source in f["sources"].items():
+                if key in labels:
+                    st.caption(f"{labels[key]}: {source}")
 
     h = detail_history(row["コード"])
-    if not h.empty and all(c in h.columns for c in ["Open","High","Low","Close"]):
+    if not h.empty and all(c in h.columns for c in ["Open", "High", "Low", "Close"]):
         st.markdown("#### 📈 日足チャート：ローソク足・移動平均・ボリンジャーバンド")
         st.plotly_chart(price_chart(h.tail(180)), use_container_width=True, config={"displayModeBar": False})
         st.markdown("#### RSI14")
@@ -459,31 +413,41 @@ def show_buy_detail(row, market_score):
     render_extended_detail(row["コード"], row, f, final)
 
 
-if "scan_results" not in st.session_state: st.session_state.scan_results = None
+if "scan_results" not in st.session_state:
+    st.session_state.scan_results = None
 if "universe" not in st.session_state:
-    saved, meta = load_saved_universe(); st.session_state.universe = saved; st.session_state.saved_meta = meta
+    saved, meta = load_saved_universe()
+    st.session_state.universe = saved
+    st.session_state.saved_meta = meta
 
 st.markdown("## 📁 SBI CSV母集団")
 saved_meta = st.session_state.get("saved_meta") or {}
 if st.session_state.universe is not None and not st.session_state.universe.empty:
-    st.success(f"保存済み母集団: {len(st.session_state.universe)}銘柄 / 保存日時: {saved_meta.get('saved_at','不明')}")
+    st.success(f"保存済み母集団: {len(st.session_state.universe)}銘柄 / 保存日時: {saved_meta.get('saved_at', '不明')}")
 else:
     st.info("まだ保存済みCSVはありません。最初にSBIのCSVを登録してください。")
 
 files = st.file_uploader("CSVを登録・差し替え（複数可）", type=["csv"], accept_multiple_files=True)
 if files:
     try:
-        universe = merge_uploaded(files); meta = save_saved_universe(universe, [f.name for f in files])
-        st.session_state.universe = universe; st.session_state.saved_meta = meta; st.session_state.scan_results = None
+        universe = merge_uploaded(files)
+        meta = save_saved_universe(universe, [f.name for f in files])
+        st.session_state.universe = universe
+        st.session_state.saved_meta = meta
+        st.session_state.scan_results = None
         st.success(f"{len(files)}ファイル・{len(universe)}銘柄を保存しました。次回から再アップロード不要です。")
     except Exception as exc:
         st.error(str(exc))
 
-c1,c2 = st.columns(2)
+c1, c2 = st.columns(2)
 with c1:
     if st.button("🗑️ 登録CSVを削除", use_container_width=True):
-        delete_saved_universe(); st.session_state.universe = None; st.session_state.saved_meta = None; st.session_state.scan_results = None
-        scan_items.clear(); st.rerun()
+        delete_saved_universe()
+        st.session_state.universe = None
+        st.session_state.saved_meta = None
+        st.session_state.scan_results = None
+        scan_items.clear()
+        st.rerun()
 with c2:
     run_now = st.button("🔄 今すぐ再分析", type="primary", use_container_width=True)
 
@@ -491,11 +455,13 @@ u = st.session_state.universe
 if u is not None and not u.empty:
     with st.expander("保存中の銘柄を確認"):
         st.dataframe(u.head(100), hide_index=True, use_container_width=True)
-    items = tuple((r["コード"], r["銘柄名"]) for _,r in u.iterrows())
+    items = tuple((r["コード"], r["銘柄名"]) for _, r in u.iterrows())
     if run_now or st.session_state.scan_results is None:
         with st.spinner(f"保存済み{len(items)}銘柄を分析中…"):
             if run_now:
-                scan_items.clear(); fundamental_employee.clear(); market_employee_score.clear()
+                scan_items.clear()
+                fundamental_employee.clear()
+                market_employee_score.clear()
             st.session_state.scan_results = scan_items(items)
 
 if st.session_state.scan_results is not None:
@@ -505,35 +471,45 @@ if st.session_state.scan_results is not None:
     if not ok:
         st.error("分析できた銘柄がありません。")
     else:
-        buy = sorted(ok, key=lambda x:x["買いスコア"], reverse=True)
-        short = sorted(ok, key=lambda x:x["空売りスコア"], reverse=True)
+        buy = sorted(ok, key=lambda x: x["買いスコア"], reverse=True)
+        short = sorted(ok, key=lambda x: x["空売りスコア"], reverse=True)
         with st.spinner("市場環境を確認中…"):
             market_score, regime, market_note = market_employee_score()
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
-        tab_buy,tab_short,tab_meeting = st.tabs(["📈 買い候補","📉 空売り候補","👥 AI社員会議"])
+
+        tab_buy, tab_short, tab_meeting = st.tabs(["📈 買い候補", "📉 空売り候補", "👥 AI社員会議"])
         with tab_buy:
             st.subheader("買い候補ランキング")
-            cols=["コード","銘柄名","買いスコア","RSI14","現在値","出来高倍率","BB下限","MA25","MA75","包み陽線"]
+            cols = ["コード", "銘柄名", "買いスコア", "RSI14", "現在値", "出来高倍率",
+                    "BB下限", "MA25", "MA75", "包み陽線"]
             st.dataframe(pd.DataFrame(buy)[cols].head(50), hide_index=True, use_container_width=True)
-            labels=[f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
-            selected=st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
+            labels = [f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
+            selected = st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
             if selected:
-                code=selected.split()[0]; row=next(r for r in buy if r["コード"]==code)
+                code = selected.split()[0]
+                row = next(r for r in buy if r["コード"] == code)
                 with st.spinner(f"{code} の詳細分析中…"):
                     show_buy_detail(row, market_score)
+
         with tab_short:
             st.subheader("空売り候補ランキング")
-            cols=["コード","銘柄名","空売りスコア","RSI14","現在値","出来高倍率","BB上限","MA25","MA75","上ヒゲ陰線"]
+            cols = ["コード", "銘柄名", "空売りスコア", "RSI14", "現在値", "出来高倍率",
+                    "BB上限", "MA25", "MA75", "上ヒゲ陰線"]
             st.dataframe(pd.DataFrame(short)[cols].head(50), hide_index=True, use_container_width=True)
             st.caption("空売りは貸借銘柄・在庫・逆日歩など売建可否を証券会社で別途確認してください。")
+
         with tab_meeting:
             st.write("上位候補をテクニカル・ファンダメンタル・市場環境の3社員で再評価します。")
             if st.button("👥 上位5銘柄をAI社員会議で再評価", use_container_width=True):
-                st.markdown("#### 買い会議"); st.dataframe(meeting_rows(buy,"buy",market_score), hide_index=True, use_container_width=True)
-                st.markdown("#### 空売り会議"); st.dataframe(meeting_rows(short,"short",market_score), hide_index=True, use_container_width=True)
+                st.markdown("#### 買い会議")
+                st.dataframe(meeting_rows(buy, "buy", market_score), hide_index=True, use_container_width=True)
+                st.markdown("#### 空売り会議")
+                st.dataframe(meeting_rows(short, "short", market_score), hide_index=True, use_container_width=True)
+
     if bad:
         with st.expander(f"⚠️ 分析できなかった銘柄（{len(bad)}件）"):
-            for r in bad[:100]: st.caption(f"{r.get('コード','')} {r.get('銘柄名','')}: {r.get('error','不明')}")
+            for r in bad[:100]:
+                st.caption(f"{r.get('コード', '')} {r.get('銘柄名', '')}: {r.get('error', '不明')}")
 
 st.markdown("---")
-st.caption(f"更新: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')} | 保存CSVは差し替えるまで継続利用 | 株価・ファンダメンタル: Yahoo Finance")
+st.caption(f"更新: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')} | 保存CSVは差し替えるまで継続利用 | ファンダメンタルはYahoo Finance＋財務諸表から補完計算")
