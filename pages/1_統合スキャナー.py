@@ -13,7 +13,18 @@ from stocknote_universe import save_universe as save_saved_universe
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
-st.caption("SBIなどのCSVを一度登録すれば、差し替えるまで保存して自動分析します。買い候補・空売り候補・AI社員会議をStocknote内でまとめて確認できます。")
+st.caption("SBIなどのCSVを一度登録すれば、差し替えるまで保存して自動分析します。テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
+
+MARKETS = {
+    "日経平均": "^N225",
+    "日経225先物": "NKD=F",
+    "SOX半導体指数": "^SOX",
+    "S&P500": "^GSPC",
+    "NASDAQ": "^IXIC",
+    "VIX": "^VIX",
+    "WTI原油": "CL=F",
+    "ドル円": "JPY=X",
+}
 
 
 def normalize_code(value):
@@ -107,7 +118,7 @@ def batch_frame(data, ticker):
 
 def one_download(code):
     try:
-        h = yf.download(f"{code}.T", period="14mo", auto_adjust=False, progress=False, threads=False, timeout=20)
+        h = yf.download(f"{code}.T", period="14mo", auto_adjust=False, progress=False, threads=False)
         if isinstance(h.columns, pd.MultiIndex):
             h.columns = h.columns.get_level_values(0)
         return h
@@ -189,23 +200,11 @@ def technical_scores(code, name, hist):
     short_score = float(np.clip(short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle, 0, 100))
 
     return {
-        "コード": code,
-        "銘柄名": name or code,
-        "現在値": px,
-        "RSI14": rv,
-        "出来高倍率": vr,
-        "MA25": m25,
-        "MA75": m75,
-        "MA200": m200,
-        "BB下限": blo,
-        "BB上限": bup,
-        "MACD": md,
-        "MACDシグナル": sg,
-        "包み陽線": reversal,
-        "上ヒゲ陰線": upper_wick_bear,
-        "買いスコア": buy_score,
-        "空売りスコア": short_score,
-        "error": None,
+        "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv,
+        "出来高倍率": vr, "MA25": m25, "MA75": m75, "MA200": m200,
+        "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
+        "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear,
+        "買いスコア": buy_score, "空売りスコア": short_score, "error": None,
     }
 
 
@@ -218,7 +217,7 @@ def scan_items(items):
         batch = items[start:start + 20]
         tickers = [f"{c}.T" for c, _ in batch]
         try:
-            data = yf.download(tickers, period="14mo", group_by="ticker", auto_adjust=False, progress=False, threads=True, timeout=25)
+            data = yf.download(tickers, period="14mo", group_by="ticker", auto_adjust=False, progress=False, threads=True)
         except Exception:
             data = pd.DataFrame()
         for code, name in batch:
@@ -237,7 +236,7 @@ def fundamental_employee(code):
     try:
         info = yf.Ticker(f"{code}.T").info or {}
     except Exception:
-        return {"score": 50.0, "comment": "ファンダメンタル取得不可"}
+        return {"score": 50.0, "comment": "ファンダメンタル取得不可", "per": None, "pbr": None, "roe": None, "opm": None, "growth": None, "div": None, "equity": None}
 
     def num(key):
         try:
@@ -252,6 +251,7 @@ def fundamental_employee(code):
     opm = num("operatingMargins")
     growth = num("revenueGrowth")
     div = num("dividendYield")
+    equity = num("bookValue")
     if div is not None and div > 1:
         div /= 100
 
@@ -275,30 +275,93 @@ def fundamental_employee(code):
     if div is not None and div >= 0.03:
         score += 5; notes.append("配当3%以上")
 
-    return {"score": float(np.clip(score, 0, 100)), "comment": "・".join(notes) if notes else "大きな加減点なし"}
+    return {
+        "score": float(np.clip(score, 0, 100)),
+        "comment": "・".join(notes) if notes else "大きな加減点なし",
+        "per": per, "pbr": pbr, "roe": roe, "opm": opm,
+        "growth": growth, "div": div, "equity": equity,
+    }
 
 
-def meeting_rows(candidates, side):
+@st.cache_data(ttl=600, show_spinner=False)
+def market_employee_score():
+    data = {}
+    for name, symbol in MARKETS.items():
+        try:
+            h = yf.download(symbol, period="2mo", interval="1d", auto_adjust=False, progress=False, threads=False)
+            if isinstance(h.columns, pd.MultiIndex):
+                h.columns = h.columns.get_level_values(0)
+            c = pd.to_numeric(h.get("Close"), errors="coerce").dropna()
+            if len(c) >= 6:
+                data[name] = {"now": float(c.iloc[-1]), "d5": float((c.iloc[-1] / c.iloc[-6] - 1) * 100)}
+        except Exception:
+            pass
+
+    score = 50.0
+    notes = []
+    for name in ["S&P500", "NASDAQ", "日経平均", "日経225先物"]:
+        v = data.get(name, {}).get("d5")
+        if v is not None:
+            if v >= 1.5: score += 4
+            elif v <= -1.5: score -= 4
+    sox = data.get("SOX半導体指数", {}).get("d5")
+    if sox is not None:
+        if sox >= 2: score += 8; notes.append("半導体強い")
+        elif sox <= -2: score -= 8; notes.append("半導体弱い")
+    vix = data.get("VIX", {}).get("now")
+    if vix is not None:
+        if vix >= 30: score -= 15; notes.append("VIX高水準")
+        elif vix >= 22: score -= 8; notes.append("VIXやや高い")
+        elif vix <= 16: score += 5; notes.append("VIX低位")
+    oil = data.get("WTI原油", {}).get("d5")
+    if oil is not None and oil >= 8:
+        score -= 5; notes.append("原油急騰")
+    fx = data.get("ドル円", {}).get("d5")
+    if fx is not None:
+        if 0.5 <= fx <= 3: score += 3; notes.append("円安傾向")
+        elif fx <= -2: score -= 3; notes.append("円高進行")
+    score = float(np.clip(score, 0, 100))
+    regime = "🟢 リスクオン" if score >= 68 else "🔴 リスクオフ" if score <= 38 else "🟡 中立・混在"
+    return score, regime, " / ".join(notes) if notes else "大きな偏りなし"
+
+
+def combined_score(row, side, market_score):
+    f = fundamental_employee(row["コード"])
+    tech = float(row["買いスコア"] if side == "buy" else row["空売りスコア"])
+    if side == "buy":
+        final = tech * 0.50 + f["score"] * 0.35 + market_score * 0.15
+    else:
+        final = tech * 0.50 + (100 - f["score"]) * 0.35 + (100 - market_score) * 0.15
+    return float(np.clip(final, 0, 100)), f
+
+
+def meeting_rows(candidates, side, market_score):
     rows = []
     score_key = "買いスコア" if side == "buy" else "空売りスコア"
     for r in sorted(candidates, key=lambda x: x.get(score_key, 0), reverse=True)[:5]:
-        f = fundamental_employee(r["コード"])
+        final, f = combined_score(r, side, market_score)
         tech = float(r[score_key])
-        if side == "buy":
-            final = tech * 0.65 + f["score"] * 0.35
-            comment = f["comment"]
-        else:
-            final = tech * 0.75 + (100 - f["score"]) * 0.25
-            comment = "強い企業ほど空売りには逆風。" + f["comment"]
         rows.append({
             "コード": r["コード"], "銘柄名": r["銘柄名"],
             "テクニカル社員": round(tech, 1),
             "ファンダ社員": round(f["score"], 1),
-            "最終評価": round(float(final), 1),
-            "RSI14": round(r["RSI14"], 1),
-            "コメント": comment,
+            "市場環境社員": round(market_score if side == "buy" else 100 - market_score, 1),
+            "最終評価": round(final, 1), "RSI14": round(r["RSI14"], 1),
+            "コメント": f["comment"],
         })
     return pd.DataFrame(rows).sort_values("最終評価", ascending=False, ignore_index=True) if rows else pd.DataFrame()
+
+
+def fmt_num(v, suffix=""):
+    if v is None or not np.isfinite(float(v)):
+        return "—"
+    return f"{float(v):.2f}{suffix}"
+
+
+def fmt_pct(v):
+    if v is None or not np.isfinite(float(v)):
+        return "—"
+    return f"{float(v) * 100:.1f}%"
 
 
 if "scan_results" not in st.session_state:
@@ -352,6 +415,8 @@ if u is not None and not u.empty:
         with st.spinner(f"保存済み{len(items)}銘柄を分析中…"):
             if run_now:
                 scan_items.clear()
+                fundamental_employee.clear()
+                market_employee_score.clear()
             st.session_state.scan_results = scan_items(items)
 
 if st.session_state.scan_results is not None:
@@ -364,12 +429,40 @@ if st.session_state.scan_results is not None:
     else:
         buy = sorted(ok, key=lambda x: x["買いスコア"], reverse=True)
         short = sorted(ok, key=lambda x: x["空売りスコア"], reverse=True)
+        with st.spinner("市場環境を確認中…"):
+            market_score, regime, market_note = market_employee_score()
+        st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
+
         tab_buy, tab_short, tab_meeting = st.tabs(["📈 買い候補", "📉 空売り候補", "👥 AI社員会議"])
 
         with tab_buy:
             st.subheader("買い候補ランキング")
             cols = ["コード", "銘柄名", "買いスコア", "RSI14", "現在値", "出来高倍率", "BB下限", "MA25", "MA75", "包み陽線"]
             st.dataframe(pd.DataFrame(buy)[cols].head(50), hide_index=True, use_container_width=True)
+
+            labels = [f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
+            selected = st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
+            if selected:
+                code = selected.split()[0]
+                row = next(r for r in buy if r["コード"] == code)
+                with st.spinner(f"{code} のファンダメンタルを分析中…"):
+                    final, f = combined_score(row, "buy", market_score)
+                st.markdown(f"### {row['コード']} {row['銘柄名']} 総合分析")
+                a, b, c, d = st.columns(4)
+                a.metric("逆張りテクニカル", f"{row['買いスコア']:.1f}/100")
+                b.metric("ファンダメンタル", f"{f['score']:.1f}/100")
+                c.metric("市場環境", f"{market_score:.1f}/100")
+                d.metric("総合評価", f"{final:.1f}/100")
+                st.caption("総合評価 = テクニカル50% + ファンダメンタル35% + 市場環境15%")
+                f1, f2, f3, f4, f5, f6 = st.columns(6)
+                f1.metric("PER", fmt_num(f["per"], "倍"))
+                f2.metric("PBR", fmt_num(f["pbr"], "倍"))
+                f3.metric("ROE", fmt_pct(f["roe"]))
+                f4.metric("営業利益率", fmt_pct(f["opm"]))
+                f5.metric("売上成長率", fmt_pct(f["growth"]))
+                f6.metric("配当利回り", fmt_pct(f["div"]))
+                st.write("ファンダ社員所見: " + f["comment"])
+                st.write(f"RSI14 {row['RSI14']:.1f} / 出来高倍率 {row['出来高倍率']:.2f} / 現在値 ¥{row['現在値']:,.0f}")
 
         with tab_short:
             st.subheader("空売り候補ランキング")
@@ -378,13 +471,13 @@ if st.session_state.scan_results is not None:
             st.caption("空売りは貸借銘柄・在庫・逆日歩など売建可否を証券会社で別途確認してください。")
 
         with tab_meeting:
-            st.write("上位候補だけファンダメンタルを追加取得して最終評価します。")
+            st.write("上位候補をテクニカル・ファンダメンタル・市場環境の3社員で再評価します。")
             if st.button("👥 上位5銘柄をAI社員会議で再評価", use_container_width=True):
-                with st.spinner("テクニカル社員とファンダメンタル社員が評価中…"):
+                with st.spinner("3社員が評価中…"):
                     st.markdown("#### 買い会議")
-                    st.dataframe(meeting_rows(buy, "buy"), hide_index=True, use_container_width=True)
+                    st.dataframe(meeting_rows(buy, "buy", market_score), hide_index=True, use_container_width=True)
                     st.markdown("#### 空売り会議")
-                    st.dataframe(meeting_rows(short, "short"), hide_index=True, use_container_width=True)
+                    st.dataframe(meeting_rows(short, "short", market_score), hide_index=True, use_container_width=True)
 
     if bad:
         with st.expander(f"⚠️ 分析できなかった銘柄（{len(bad)}件）"):
