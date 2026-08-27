@@ -7,11 +7,11 @@ on:
     - cron: '15 23 * * 0-4'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: stocknote-morning-scan
-  cancel-in-progress: true
+  group: stocknote-candidate-data
+  cancel-in-progress: false
 
 jobs:
   morning-scan:
@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -49,3 +51,16 @@ jobs:
 
       - name: Scan and send Discord candidates
         run: python morning_scan.py
+
+      - name: Save monitoring list
+        run: |
+          if [ -n "$(git status --porcelain data/)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data
+            git commit -m "Update Stocknote candidate monitoring data"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No monitoring data changes"
+          fi

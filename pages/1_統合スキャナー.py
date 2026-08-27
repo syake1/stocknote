@@ -13,6 +13,7 @@ from stocknote_fundamentals import get_fundamentals
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
+from stocknote_tracking import merge_new_candidates
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
@@ -452,6 +453,7 @@ with c2:
     run_now = st.button("🔄 今すぐ再分析", type="primary", use_container_width=True)
 
 u = st.session_state.universe
+performed_scan = False
 if u is not None and not u.empty:
     with st.expander("保存中の銘柄を確認"):
         st.dataframe(u.head(100), hide_index=True, use_container_width=True)
@@ -463,6 +465,7 @@ if u is not None and not u.empty:
                 fundamental_employee.clear()
                 market_employee_score.clear()
             st.session_state.scan_results = scan_items(items)
+            performed_scan = True
 
 if st.session_state.scan_results is not None:
     ok = [r for r in st.session_state.scan_results if not r.get("error")]
@@ -473,6 +476,21 @@ if st.session_state.scan_results is not None:
     else:
         buy = sorted(ok, key=lambda x: x["買いスコア"], reverse=True)
         short = sorted(ok, key=lambda x: x["空売りスコア"], reverse=True)
+        if performed_scan:
+            new_candidates = []
+            for r in buy:
+                if float(r["買いスコア"]) < 55:
+                    continue
+                new_candidates.append({
+                    "code": r["コード"], "name": r["銘柄名"], "price": r["現在値"],
+                    "score": r["買いスコア"], "rsi": r["RSI14"],
+                    "ma25": r["MA25"], "ma75": r["MA75"], "ma200": r["MA200"],
+                    "macd": r["MACD"], "macd_signal": r["MACDシグナル"],
+                    "volume_ratio": r["出来高倍率"],
+                })
+                if len(new_candidates) >= 10:
+                    break
+            merge_new_candidates(new_candidates)
         with st.spinner("市場環境を確認中…"):
             market_score, regime, market_note = market_employee_score()
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
