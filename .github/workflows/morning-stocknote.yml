@@ -1,10 +1,17 @@
-name: Stocknote 朝スキャン
+name: Stocknote 全銘柄自動スキャン
 
 on:
   workflow_dispatch:
   schedule:
-    # 08:15 JST Mon-Fri. GitHub cron is UTC.
+    # GitHub cron is UTC. 日本時間の平日に自動実行する。
+    # 朝 08:15 JST
     - cron: '15 23 * * 0-4'
+    # 前場 09:05 / 10:05 / 11:05 JST
+    - cron: '5 0,1,2 * * 1-5'
+    # 後場 12:35 / 13:35 / 14:35 JST
+    - cron: '35 3,4,5 * * 1-5'
+    # 大引け後 15:40 JST（終値で最終スキャン）
+    - cron: '40 6 * * 1-5'
 
 permissions:
   contents: write
