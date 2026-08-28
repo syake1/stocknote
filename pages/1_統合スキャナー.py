@@ -320,23 +320,35 @@ def fmt_pct(v):
 
 
 def highlight_buy_score(row):
-    """買い条件到達・接近をランキング上で色分けする。"""
+    """黒背景を保ち、買い候補の識別列だけを赤くする。"""
     score = pd.to_numeric(row.get("買いスコア"), errors="coerce")
+    styles = [""] * len(row)
     if pd.notna(score) and score >= 75:
-        return ["background-color: #fecaca; color: #7f1d1d; font-weight: 700"] * len(row)
-    if pd.notna(score) and score >= 65:
-        return ["background-color: #fef3c7; color: #78350f; font-weight: 700"] * len(row)
-    return [""] * len(row)
+        color = "color: #ff5252; font-weight: 800"
+    elif pd.notna(score) and score >= 65:
+        color = "color: #ff9e9e; font-weight: 700"
+    else:
+        return styles
+    for key in ("コード", "銘柄名", "買いスコア"):
+        if key in row.index:
+            styles[row.index.get_loc(key)] = color
+    return styles
 
 
 def highlight_short_score(row):
-    """空売り条件到達・接近をランキング上で青く色分けする。"""
+    """黒背景を保ち、空売り候補の識別列だけを青くする。"""
     score = pd.to_numeric(row.get("空売りスコア"), errors="coerce")
+    styles = [""] * len(row)
     if pd.notna(score) and score >= 75:
-        return ["background-color: #bfdbfe; color: #1e3a8a; font-weight: 700"] * len(row)
-    if pd.notna(score) and score >= 65:
-        return ["background-color: #dbeafe; color: #1e40af; font-weight: 700"] * len(row)
-    return [""] * len(row)
+        color = "color: #42a5f5; font-weight: 800"
+    elif pd.notna(score) and score >= 65:
+        color = "color: #90caf9; font-weight: 700"
+    else:
+        return styles
+    for key in ("コード", "銘柄名", "空売りスコア"):
+        if key in row.index:
+            styles[row.index.get_loc(key)] = color
+    return styles
 
 
 def detail_history(code):
