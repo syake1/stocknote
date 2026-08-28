@@ -384,7 +384,10 @@ def fmt_num(x, digits=1):
 
 def create_candlestick_chart(hist):
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='株価', increasing_line_color='#26a69a', decreasing_line_color='#ef5350'))
+    fig.add_trace(go.Candlestick(
+        x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name='株価',
+        increasing_line_color='#ef4444', increasing_fillcolor='#ef4444',
+        decreasing_line_color='#3b82f6', decreasing_fillcolor='#3b82f6'))
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MA25'], line=dict(color='#FFA726', width=1.5), name='25日線'))
     fig.add_trace(go.Scatter(x=hist.index, y=hist['MA75'], line=dict(color='#42A5F5', width=1.5), name='75日線'))
     fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_upper'], line=dict(color='rgba(200,200,200,0.5)', width=1, dash='dash'), name='+2σ'))
