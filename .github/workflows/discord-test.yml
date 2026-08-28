@@ -1,0 +1,30 @@
+name: Stocknote Discord通知テスト
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check webhook secret
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "ERROR: DISCORD_WEBHOOK is not registered"
+            exit 1
+          fi
+
+      - name: Send Stocknote test notification
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl --fail --silent --show-error \
+            -H "Content-Type: application/json" \
+            -d '{"content":"✅ **Stocknote 通知テスト成功**\n今後、買い候補や重要な状態変化をこのチャンネルへ通知します。"}' \
+            "$DISCORD_WEBHOOK"
