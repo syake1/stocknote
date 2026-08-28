@@ -319,6 +319,26 @@ def fmt_pct(v):
     return "—" if v is None else f"{float(v) * 100:.1f}%"
 
 
+def highlight_buy_score(row):
+    """買い条件到達・接近をランキング上で色分けする。"""
+    score = pd.to_numeric(row.get("買いスコア"), errors="coerce")
+    if pd.notna(score) and score >= 75:
+        return ["background-color: #fecaca; color: #7f1d1d; font-weight: 700"] * len(row)
+    if pd.notna(score) and score >= 65:
+        return ["background-color: #fef3c7; color: #78350f; font-weight: 700"] * len(row)
+    return [""] * len(row)
+
+
+def highlight_short_score(row):
+    """空売り条件到達・接近をランキング上で青く色分けする。"""
+    score = pd.to_numeric(row.get("空売りスコア"), errors="coerce")
+    if pd.notna(score) and score >= 75:
+        return ["background-color: #bfdbfe; color: #1e3a8a; font-weight: 700"] * len(row)
+    if pd.notna(score) and score >= 65:
+        return ["background-color: #dbeafe; color: #1e40af; font-weight: 700"] * len(row)
+    return [""] * len(row)
+
+
 def detail_history(code):
     h = one_download(code, "10mo", "1d")
     if h.empty or "Close" not in h:
@@ -509,9 +529,12 @@ if st.session_state.scan_results is not None:
         tab_buy, tab_short, tab_meeting = st.tabs(["📈 買い候補", "📉 空売り候補", "👥 AI社員会議"])
         with tab_buy:
             st.subheader("買い候補ランキング")
+            st.caption("🔴 75点以上＝買い条件到達　🟡 65〜74.9点＝買い条件接近")
             cols = ["コード", "銘柄名", "買いスコア", "RSI14", "現在値", "出来高倍率",
                     "BB下限", "MA25", "MA75", "包み陽線"]
-            st.dataframe(pd.DataFrame(buy)[cols].head(50), hide_index=True, use_container_width=True)
+            buy_table = pd.DataFrame(buy)[cols].head(50)
+            st.dataframe(buy_table.style.apply(highlight_buy_score, axis=1),
+                         hide_index=True, use_container_width=True)
             labels = [f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
             selected = st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
             if selected:
@@ -522,9 +545,12 @@ if st.session_state.scan_results is not None:
 
         with tab_short:
             st.subheader("空売り候補ランキング")
+            st.caption("🔵 75点以上＝空売り条件到達　薄い青＝65〜74.9点・条件接近")
             cols = ["コード", "銘柄名", "空売りスコア", "RSI14", "現在値", "出来高倍率",
                     "BB上限", "MA25", "MA75", "上ヒゲ陰線"]
-            st.dataframe(pd.DataFrame(short)[cols].head(50), hide_index=True, use_container_width=True)
+            short_table = pd.DataFrame(short)[cols].head(50)
+            st.dataframe(short_table.style.apply(highlight_short_score, axis=1),
+                         hide_index=True, use_container_width=True)
             st.caption("空売りは貸借銘柄・在庫・逆日歩など売建可否を証券会社で別途確認してください。")
 
         with tab_meeting:
