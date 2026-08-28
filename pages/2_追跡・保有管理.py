@@ -7,6 +7,8 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from stocknote_tracking import load_active, load_history
+
 st.set_page_config(page_title="Stocknote 追跡・保有管理", layout="wide")
 st.title("📌 Stocknote 追跡・保有管理")
 st.caption("候補の経過追跡・実保有株・現在資金・損益をStocknote内で一括管理します。固定300万円は使いません。")
@@ -63,6 +65,45 @@ def init_db():
 
 
 init_db()
+
+# ======================== 自動監視候補 ========================
+st.markdown("## 🔄 自動監視中の買い候補")
+st.caption("新規検索が0件でも消えず、初回検出から14日間、相場中に15分ごとに再評価されます。")
+auto_active = load_active()
+if auto_active:
+    auto_rows = []
+    for item in auto_active:
+        auto_rows.append({
+            "コード": item.get("code"), "銘柄名": item.get("name"),
+            "現在値": item.get("current_price"), "騰落率%": item.get("return_pct"),
+            "状態": item.get("status"), "経過日数": item.get("elapsed_days"),
+            "RSI14": item.get("rsi"), "BB位置σ": item.get("bb_position"),
+            "出来高倍率": item.get("volume_ratio"), "買いスコア": item.get("score"),
+            "初回検出日時": item.get("first_seen_at"), "最終更新日時": item.get("updated_at"),
+        })
+    st.dataframe(pd.DataFrame(auto_rows), hide_index=True, use_container_width=True)
+else:
+    st.info("現在、自動監視中の買い候補はありません。新規候補が検出されるとここへ追加されます。")
+
+with st.expander("📚 14日間の監視を終了した検証履歴"):
+    completed = load_history()
+    if completed:
+        history_rows = []
+        for item in completed:
+            snapshots = item.get("snapshots", [])
+            checkpoints = {}
+            for day in (1, 3, 5, 7, 14):
+                choices = [s for s in snapshots if (s.get("elapsed_days") or 0) >= day]
+                checkpoints[f"{day}日後%"] = choices[0].get("return_pct") if choices else None
+            history_rows.append({
+                "コード": item.get("code"), "銘柄名": item.get("name"),
+                "初回価格": item.get("first_price"), **checkpoints,
+                "最終状態": item.get("status"), "初回検出日時": item.get("first_seen_at"),
+                "監視終了日時": item.get("updated_at"),
+            })
+        st.dataframe(pd.DataFrame(history_rows), hide_index=True, use_container_width=True)
+    else:
+        st.caption("監視終了済みの履歴はまだありません。")
 
 
 def normalize_code(value):

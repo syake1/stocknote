@@ -13,9 +13,13 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from monitor_candidates import notify
+from stocknote_tracking import filter_new_notifications, merge_new_candidates
+
 UNIVERSE = os.getenv("STOCKNOTE_UNIVERSE", "data/saved_universe.csv")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 TOP_N = int(os.getenv("STOCKNOTE_TOP_N", "10"))
+MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "55"))
 
 
 def normalize_code(value):
@@ -115,7 +119,12 @@ def main():
             print(f"WARN {code}: {exc}", file=sys.stderr)
         if i % 25 == 0: print(f"scanned {i}/{len(items)}")
     results.sort(key=lambda x:x["score"], reverse=True)
-    post_discord(results[:TOP_N], len(items))
+    candidates = [row for row in results if row["score"] >= MIN_SCORE][:TOP_N]
+    # This is an upsert, never a replacement: a zero-result scan leaves the
+    # active 14-day monitoring list untouched.
+    events = merge_new_candidates(candidates)
+    notify(filter_new_notifications(events))
+    print(f"new scan: {len(candidates)} candidates from {len(items)} stocks")
 
 
 if __name__ == "__main__":
