@@ -371,7 +371,8 @@ def price_chart(h):
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
         x=h.index, open=h["Open"], high=h["High"], low=h["Low"], close=h["Close"], name="株価",
-        increasing_line_color="#ef4444", decreasing_line_color="#3b82f6"))
+        increasing_line_color="#ef4444", increasing_fillcolor="#ef4444",
+        decreasing_line_color="#3b82f6", decreasing_fillcolor="#3b82f6"))
     for col, label in [("MA25", "MA25"), ("MA75", "MA75"), ("MA200", "MA200"),
                        ("BB上限", "+2σ"), ("BB下限", "-2σ")]:
         fig.add_trace(go.Scatter(x=h.index, y=h[col], mode="lines", name=label))
@@ -450,6 +451,10 @@ def show_buy_detail(row, market_score):
     h = detail_history(row["コード"])
     if not h.empty and all(c in h.columns for c in ["Open", "High", "Low", "Close"]):
         st.markdown("#### 📈 日足チャート：ローソク足・移動平均・ボリンジャーバンド")
+        last = h.dropna(subset=["Open", "Close"]).iloc[-1]
+        last_date = pd.Timestamp(last.name).strftime("%Y/%m/%d")
+        direction = "赤・上昇足" if float(last["Close"]) >= float(last["Open"]) else "青・下降足"
+        st.caption(f"最終足 {last_date}：始値 ¥{float(last['Open']):,.0f} → 終値 ¥{float(last['Close']):,.0f}（{direction}）")
         st.plotly_chart(price_chart(h.tail(180)), use_container_width=True, config={"displayModeBar": False})
         st.markdown("#### RSI14")
         st.plotly_chart(rsi_chart(h.tail(180)), use_container_width=True, config={"displayModeBar": False})
