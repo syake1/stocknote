@@ -13,11 +13,24 @@ from stocknote_fundamentals import get_fundamentals
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
-from stocknote_tracking import merge_new_candidates
+from stocknote_tracking import load_active, merge_new_candidates
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
 st.caption("保存したSBI CSVを母集団に、テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
+
+st.markdown("## 📌 現在監視中の買い候補")
+active_candidates = load_active()
+if active_candidates:
+    active_rows = [{
+        "コード": r.get("code"), "銘柄名": r.get("name"),
+        "現在値": r.get("current_price"), "騰落率%": r.get("return_pct"),
+        "状態": r.get("status"), "初回検出日時": r.get("first_seen_at"),
+        "最終更新日時": r.get("updated_at"),
+    } for r in active_candidates]
+    st.dataframe(pd.DataFrame(active_rows), hide_index=True, use_container_width=True)
+else:
+    st.info("監視候補を作成中です。保存済みSBIデータがあれば、この画面で自動的に再分析します。")
 
 MARKETS = {
     "日経平均": "^N225", "日経225先物": "NKD=F", "SOX半導体指数": "^SOX",
@@ -479,8 +492,6 @@ if st.session_state.scan_results is not None:
         if performed_scan:
             new_candidates = []
             for r in buy:
-                if float(r["買いスコア"]) < 55:
-                    continue
                 new_candidates.append({
                     "code": r["コード"], "name": r["銘柄名"], "price": r["現在値"],
                     "score": r["買いスコア"], "rsi": r["RSI14"],

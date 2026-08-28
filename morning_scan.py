@@ -19,7 +19,7 @@ from stocknote_tracking import filter_new_notifications, merge_new_candidates
 UNIVERSE = os.getenv("STOCKNOTE_UNIVERSE", "data/saved_universe.csv")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 TOP_N = int(os.getenv("STOCKNOTE_TOP_N", "10"))
-MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "55"))
+MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "0"))
 
 
 def normalize_code(value):
