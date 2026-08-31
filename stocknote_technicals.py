@@ -61,6 +61,14 @@ def calculate(code, name, hist):
     tr = pd.concat([(high-low).abs(), (high-prev).abs(), (low-prev).abs()], axis=1).max(axis=1)
     atr = tr.rolling(14).mean()
     psar = parabolic_sar(high, low)
+    # A buy turn is only the latest bar changing from SAR above price to SAR below price.
+    psar_bull = close > psar
+    psar_buy_turn = bool(len(psar_bull) >= 2 and (not bool(psar_bull.iloc[-2])) and bool(psar_bull.iloc[-1]))
+    latest_bar = close.index[-1]
+    try:
+        psar_bar_time = latest_bar.isoformat()
+    except AttributeError:
+        psar_bar_time = str(latest_bar)
     volume = pd.to_numeric(frame.get("Volume"), errors="coerce") if "Volume" in frame else None
     vol, vr = None, None
     if volume is not None and not volume.dropna().empty:
@@ -83,6 +91,8 @@ def calculate(code, name, hist):
         "ma200": float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else None,
         "macd": float(macd.iloc[-1]), "macd_signal": float(signal.iloc[-1]),
         "volume": vol, "volume_ratio": vr, "psar": float(psar.iloc[-1]),
+        "psar_bull": bool(psar_bull.iloc[-1]), "psar_buy_turn": psar_buy_turn,
+        "psar_bar_time": psar_bar_time,
         "atr": float(atr.iloc[-1]), "score": float(np.clip(score, 0, 100)),
     }
 
