@@ -1,10 +1,11 @@
-name: Stocknote 15分監視更新
+name: Stocknote 5分監視・15分足パラボリック
 
 on:
   workflow_dispatch:
   schedule:
-    # 平日JST 09:00〜15:59。正確な前場・後場判定はPython側で行う。
-    - cron: '*/15 0-6 * * 1-5'
+    # 平日JST 09:00〜15:59。5分ごとに起動し、15分足の最新転換を早く拾う。
+    # 正確な前場・後場判定はPython側で行う。
+    - cron: '*/5 0-6 * * 1-5'
 
 permissions:
   contents: write
@@ -29,9 +30,9 @@ jobs:
           python-version: '3.11'
           cache: pip
       - run: pip install --disable-pip-version-check -r requirements.txt
-      - name: Update active candidates only
+      - name: Update active candidates and Parabolic SAR alerts
         run: python monitor_candidates.py
-      - name: Persist values, states and completed history
+      - name: Persist values, alert state and completed history
         run: |
           if [ -n "$(git status --porcelain data/)" ]; then
             git config user.name "github-actions[bot]"
