@@ -42,22 +42,31 @@ def score_one(code, name):
                     progress=False, threads=False)
     if isinstance(h.columns, pd.MultiIndex):
         h.columns = h.columns.get_level_values(0)
-    if h.empty or "Close" not in h or len(h) < 80:
+    if h.empty or "Close" not in h or len(h) < 205:
         return None
     close = pd.to_numeric(h["Close"], errors="coerce").dropna()
-    if len(close) < 80:
+    if len(close) < 205:
         return None
     rsi = rsi14(close)
     ma25 = close.rolling(25).mean()
     ma75 = close.rolling(75).mean()
     ma200 = close.rolling(200).mean()
+    # Daily trend filter: do not nominate stocks whose 75-day or 200-day
+    # moving average is pointing down. Compare with five trading days ago to
+    # avoid treating tiny one-day noise as a trend change.
+    ma75_now, ma75_prev = ma75.iloc[-1], ma75.iloc[-6]
+    ma200_now, ma200_prev = ma200.iloc[-1], ma200.iloc[-6]
+    if any(pd.isna(x) for x in (ma75_now, ma75_prev, ma200_now, ma200_prev)):
+        return None
+    if float(ma75_now) < float(ma75_prev) or float(ma200_now) < float(ma200_prev):
+        return None
     std25 = close.rolling(25).std()
     lower = ma25 - 2 * std25
     macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
     px, rv = float(close.iloc[-1]), float(rsi.iloc[-1])
     m25, m75 = float(ma25.iloc[-1]), float(ma75.iloc[-1])
-    m200 = float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else np.nan
+    m200 = float(ma200.iloc[-1])
     blo = float(lower.iloc[-1])
     md, sg = float(macd.iloc[-1]), float(signal.iloc[-1])
     vr = 1.0
@@ -73,12 +82,13 @@ def score_one(code, name):
                             and close.iloc[-1] >= o.iloc[-2] and o.iloc[-1] <= close.iloc[-2])
     buy_rsi = float(np.clip((55-rv)/30*35, 0, 35))
     buy_bb = 25.0 if px <= blo*1.02 else float(np.clip((m25-px)/max(m25-blo,1e-9)*20,0,20))
-    buy_trend = (12.0 if m25 >= m75 else 4.0) + (5.0 if np.isfinite(m200) and px >= m200 else 0.0)
+    buy_trend = (12.0 if m25 >= m75 else 4.0) + (5.0 if px >= m200 else 0.0)
     buy_macd = 8.0 if md >= sg else 2.0
     buy_volume = float(np.clip((vr-0.8)*6,0,8))
     buy_candle = 12.0 if reversal else 0.0
     score = float(np.clip(buy_rsi+buy_bb+buy_trend+buy_macd+buy_volume+buy_candle,0,100))
-    return {"code":code,"name":name or code,"price":px,"rsi":rv,"vr":vr,"score":score,"reversal":reversal}
+    return {"code":code,"name":name or code,"price":px,"rsi":rv,"vr":vr,"score":score,"reversal":reversal,
+            "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up"}
 
 
 def post_discord(rows, total):
