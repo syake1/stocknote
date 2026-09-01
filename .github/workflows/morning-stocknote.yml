@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   schedule:
     # GitHub cron is UTC. 日本時間の平日に自動実行する。
+    # 朝会 06:30 JST
+    - cron: '30 21 * * 0-4'
     # 朝 08:15 JST
     - cron: '15 23 * * 0-4'
     # 前場 09:05 / 10:05 / 11:05 JST
@@ -57,6 +59,9 @@ jobs:
           PY
 
       - name: Scan and send Discord candidates
+        env:
+          # 06:30の定期実行と手動テストだけ朝会を送信する。
+          STOCKNOTE_SEND_MEETING: ${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '30 21 * * 0-4') && '1' || '0' }}
         run: python morning_scan.py
 
       - name: Save monitoring list
