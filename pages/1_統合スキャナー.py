@@ -14,6 +14,7 @@ from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
 from stocknote_tracking import load_active, merge_new_candidates
+from stocknote_technicals import daily_trend_context
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
@@ -155,6 +156,7 @@ def technical_scores(code, name, hist):
     bb_lower = ma25 - 2 * std25
     macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
+    trend = daily_trend_context(hist)
 
     px = float(close.iloc[-1])
     rv = float(rsi.iloc[-1])
@@ -192,7 +194,10 @@ def technical_scores(code, name, hist):
     buy_macd = 8.0 if md >= sg else 2.0
     buy_volume = float(np.clip((vr - 0.8) * 6, 0, 8))
     buy_candle = 12.0 if reversal else 0.0
-    buy_score = float(np.clip(buy_rsi + buy_bb + buy_trend + buy_macd + buy_volume + buy_candle, 0, 100))
+    ichimoku = 8.0 if trend and trend["tenkan_cross_up"] else 5.0 if trend and trend["tenkan_above_kijun"] else 0.0
+    buy_score = float(np.clip(buy_rsi + buy_bb + buy_trend + buy_macd + buy_volume + buy_candle + ichimoku, 0, 100))
+    if not trend or not trend["buy_eligible"]:
+        buy_score = min(buy_score, 44.0)
 
     short_rsi = float(np.clip((rv - 55) / 25 * 35, 0, 35))
     short_bb = 25.0 if px >= bup * 0.98 else float(np.clip((px - m25) / max(bup - m25, 1e-9) * 20, 0, 20))
@@ -208,6 +213,12 @@ def technical_scores(code, name, hist):
         "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
         "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear,
         "買いスコア": buy_score, "空売りスコア": short_score,
+        "買い対象": bool(trend and trend["buy_eligible"]),
+        "一目位置": trend["cloud_position"] if trend else "データ不足",
+        "転換線": trend["tenkan"] if trend else np.nan,
+        "基準線": trend["kijun"] if trend else np.nan,
+        "転換線上抜け": bool(trend and trend["tenkan_cross_up"]),
+        "トレンド判定": trend["trend_reason"] if trend else "日足履歴不足",
         "買い内訳": {"RSI": buy_rsi, "BB": buy_bb, "トレンド": buy_trend,
                      "MACD": buy_macd, "出来高": buy_volume, "ローソク足": buy_candle},
         "error": None,
@@ -524,7 +535,8 @@ if st.session_state.scan_results is not None:
     if not ok:
         st.error("分析できた銘柄がありません。")
     else:
-        buy = sorted(ok, key=lambda x: x["買いスコア"], reverse=True)
+        buy = sorted([r for r in ok if r.get("買い対象")], key=lambda x: x["買いスコア"], reverse=True)
+        watch_only = sorted([r for r in ok if not r.get("買い対象")], key=lambda x: x["買いスコア"], reverse=True)
         short = sorted(ok, key=lambda x: x["空売りスコア"], reverse=True)
         if performed_scan:
             new_candidates = []
@@ -535,6 +547,9 @@ if st.session_state.scan_results is not None:
                     "ma25": r["MA25"], "ma75": r["MA75"], "ma200": r["MA200"],
                     "macd": r["MACD"], "macd_signal": r["MACDシグナル"],
                     "volume_ratio": r["出来高倍率"],
+                    "cloud_position": r["一目位置"], "tenkan": r["転換線"],
+                    "kijun": r["基準線"], "tenkan_cross_up": r["転換線上抜け"],
+                    "buy_eligible": r["買い対象"], "trend_reason": r["トレンド判定"],
                 })
                 if len(new_candidates) >= 10:
                     break
@@ -547,18 +562,26 @@ if st.session_state.scan_results is not None:
         with tab_buy:
             st.subheader("買い候補ランキング")
             st.caption("🔴 75点以上＝買い条件到達　🟡 65〜74.9点＝買い条件接近")
-            cols = ["コード", "銘柄名", "買いスコア", "RSI14", "現在値", "出来高倍率",
-                    "BB下限", "MA25", "MA75", "包み陽線"]
-            buy_table = pd.DataFrame(buy)[cols].head(50)
-            st.dataframe(buy_table.style.apply(highlight_buy_score, axis=1),
-                         hide_index=True, use_container_width=True)
-            labels = [f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
-            selected = st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
-            if selected:
-                code = selected.split()[0]
-                row = next(r for r in buy if r["コード"] == code)
-                with st.spinner(f"{code} の詳細分析中…"):
-                    show_buy_detail(row, market_score)
+            st.caption("雲の上・75日線/200日線が下向きでない・株価が200日線以上の銘柄だけを表示します。RSIは監視開始の目安です。")
+            cols = ["コード", "銘柄名", "買いスコア", "RSI14", "現在値", "一目位置",
+                    "転換線", "基準線", "転換線上抜け", "出来高倍率", "包み陽線"]
+            if buy:
+                buy_table = pd.DataFrame(buy)[cols].head(50)
+                st.dataframe(buy_table.style.apply(highlight_buy_score, axis=1),
+                             hide_index=True, use_container_width=True)
+                labels = [f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
+                selected = st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
+                if selected:
+                    code = selected.split()[0]
+                    row = next(r for r in buy if r["コード"] == code)
+                    with st.spinner(f"{code} の詳細分析中…"):
+                        show_buy_detail(row, market_score)
+            else:
+                st.info("現在、上昇トレンド押し目の必須条件を満たす買い候補はありません。")
+            with st.expander(f"監視のみ・除外銘柄（{len(watch_only)}件）"):
+                if watch_only:
+                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "RSI14", "一目位置", "トレンド判定"]].head(100),
+                                 hide_index=True, use_container_width=True)
 
         with tab_short:
             st.subheader("空売り候補ランキング")
