@@ -107,6 +107,41 @@ def financial_comment(f):
     return "・".join(notes) if notes else "取得できた財務指標が少ないため、評価は参考扱いです。"
 
 
+FINANCIAL_GUIDE = {
+    "PER": "株価が利益の何倍まで買われているか。低いほど割安の目安ですが、業種比較が必要です。",
+    "PBR": "株価が純資産の何倍か。1倍前後以下は割安の目安ですが、収益力も確認します。",
+    "ROE": "自己資本を使って利益を生む力。一般に10%以上は良好の目安です。",
+    "自己資本比率": "総資産に占める自己資本の割合。高いほど財務余力がある目安です。",
+    "営業利益率": "本業の売上に対する利益率。高く安定しているほど本業が強い目安です。",
+    "売上成長率": "前年と比べた売上の増減。プラスなら増収です。",
+    "配当利回り": "株価に対する年間配当の割合。3%以上を加点しています。",
+}
+
+
+def financial_rows(f):
+    """Build the displayed values and plain-language judgements from scored data."""
+    specs = [
+        ("PER", "per", lambda v: fmt_num(v, "倍"), lambda v: "割安" if 0 < v <= 15 else "高め" if v >= 35 else "標準"),
+        ("PBR", "pbr", lambda v: fmt_num(v, "倍"), lambda v: "低め" if 0 < v <= 1.2 else "高め" if v >= 4 else "標準"),
+        ("ROE", "roe", fmt_pct, lambda v: "良好" if v >= .10 else "注意" if v < 0 else "標準"),
+        ("自己資本比率", "equity_ratio", fmt_pct, lambda v: "良好" if v >= .50 else "低め" if v < .20 else "標準"),
+        ("営業利益率", "opm", fmt_pct, lambda v: "良好" if v >= .10 else "赤字" if v < 0 else "標準"),
+        ("売上成長率", "growth", fmt_pct, lambda v: "増収" if v >= .05 else "減収" if v < 0 else "横ばい"),
+        ("配当利回り", "div", fmt_pct, lambda v: "3%以上" if v >= .03 else "3%未満"),
+    ]
+    rows = []
+    for label, key, formatter, judge in specs:
+        value = f.get(key)
+        rows.append({
+            "指標": label,
+            "数値": formatter(value) if value is not None else "データなし",
+            "判定": judge(float(value)) if value is not None else "判定しない",
+            "意味": FINANCIAL_GUIDE[label],
+            "取得元": f.get("sources", {}).get(key, "取得元なし"),
+        })
+    return rows
+
+
 def render_extended_detail(code, row, f, final_score):
     st.markdown("---")
     st.markdown("## 🧾 詳細分析")
@@ -135,12 +170,21 @@ def render_extended_detail(code, row, f, final_score):
 
     st.markdown("### 💰 ファンダメンタル評価")
     st.info(financial_comment(f))
-    st.caption("PER・PBR・ROE・自己資本比率・営業利益率・売上成長率・配当利回りを総合評価に使用しています。")
+    rows = financial_rows(f)
+    metric_cols = st.columns(7)
+    for col, item in zip(metric_cols, rows):
+        col.metric(item["指標"], item["数値"])
+        col.caption(item["判定"])
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    if not f.get("available"):
+        st.warning("今回は財務指標を取得できなかったため、ファンダメンタル点は中立50点として扱います。推測値は表示しません。")
+    else:
+        st.caption(f"取得できた財務指標: {f.get('available', 0)}/7。データなしの項目は総合点に加減していません。")
 
     profile = company_profile(code)
     st.markdown("### 🏢 事業概要")
     p1, p2, p3 = st.columns(3)
-    p1.metric("会社名", profile["name"])
+    p1.metric("会社名", profile["name"] if profile["name"] != code else row.get("銘柄名", code))
     p2.metric("業種", profile["sector"])
     if profile["market_cap"] is not None:
         p3.metric("時価総額", f"{profile['market_cap']/1e8:,.0f}億円")

@@ -419,7 +419,7 @@ def show_buy_detail(row, market_score):
     final, f = combined_score(row, "buy", market_score)
     st.markdown(f"### {row['コード']} {row['銘柄名']} 総合分析")
     a, b, c, d = st.columns(4)
-    a.metric("逆張りテクニカル", f"{row['買いスコア']:.1f}/100")
+    a.metric("押し目テクニカル", f"{row['買いスコア']:.1f}/100")
     b.metric("ファンダメンタル", f"{f['score']:.1f}/100")
     c.metric("市場環境", f"{market_score:.1f}/100")
     d.metric("総合評価", f"{final:.1f}/100")
@@ -437,7 +437,7 @@ def show_buy_detail(row, market_score):
         t6.metric("MACD", f"{row['MACD']:.2f}")
         st.write("包み陽線: " + ("✅" if row.get("包み陽線") else "—"))
     with right:
-        st.markdown("#### 🎯 逆張りチャンス評価")
+        st.markdown("#### 🎯 上昇トレンド押し目評価")
         st.plotly_chart(score_radar(row, f, market_score), use_container_width=True,
                         config={"displayModeBar": False})
 
