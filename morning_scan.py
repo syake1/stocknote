@@ -15,9 +15,11 @@ import yfinance as yf
 
 from monitor_candidates import notify
 from stocknote_tracking import filter_new_notifications, merge_new_candidates
+from stocknote_technicals import daily_trend_context
 
 UNIVERSE = os.getenv("STOCKNOTE_UNIVERSE", "data/saved_universe.csv")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
+SEND_MEETING = os.getenv("STOCKNOTE_SEND_MEETING", "0") == "1"
 TOP_N = int(os.getenv("STOCKNOTE_TOP_N", "10"))
 MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "0"))
 
@@ -51,9 +53,10 @@ def score_one(code, name):
     ma25 = close.rolling(25).mean()
     ma75 = close.rolling(75).mean()
     ma200 = close.rolling(200).mean()
-    # Daily trend filter: do not nominate stocks whose 75-day or 200-day
-    # moving average is pointing down. Compare with five trading days ago to
-    # avoid treating tiny one-day noise as a trend change.
+    trend = daily_trend_context(h)
+    if not trend or not trend["buy_eligible"]:
+        return None
+    # Daily trend filter: compare with five trading days ago.
     ma75_now, ma75_prev = ma75.iloc[-1], ma75.iloc[-6]
     ma200_now, ma200_prev = ma200.iloc[-1], ma200.iloc[-6]
     if any(pd.isna(x) for x in (ma75_now, ma75_prev, ma200_now, ma200_prev)):
@@ -86,9 +89,10 @@ def score_one(code, name):
     buy_macd = 8.0 if md >= sg else 2.0
     buy_volume = float(np.clip((vr-0.8)*6,0,8))
     buy_candle = 12.0 if reversal else 0.0
-    score = float(np.clip(buy_rsi+buy_bb+buy_trend+buy_macd+buy_volume+buy_candle,0,100))
+    ichimoku = 8.0 if trend["tenkan_cross_up"] else 5.0 if trend["tenkan_above_kijun"] else 0.0
+    score = float(np.clip(buy_rsi+buy_bb+buy_trend+buy_macd+buy_volume+buy_candle+ichimoku,0,100))
     return {"code":code,"name":name or code,"price":px,"rsi":rv,"vr":vr,"score":score,"reversal":reversal,
-            "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up"}
+            "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up", **trend}
 
 
 def post_discord(rows, total):
@@ -97,7 +101,8 @@ def post_discord(rows, total):
         lines = [f"📊 **Stocknote 朝の買い候補**  {now}", f"母集団 {total}銘柄 / 上位 {len(rows)}銘柄"]
         for i, r in enumerate(rows, 1):
             candle = " / 包み陽線" if r["reversal"] else ""
-            lines.append(f"{i}. **{r['code']} {r['name']}**  score {r['score']:.1f} / RSI {r['rsi']:.1f} / ¥{r['price']:,.0f} / 出来高 {r['vr']:.2f}倍{candle}")
+            ichi = " / 転換線↑基準線" if r.get("tenkan_above_kijun") else " / 転換線≤基準線"
+            lines.append(f"{i}. **{r['code']} {r['name']}**  score {r['score']:.1f} / RSI {r['rsi']:.1f} / ¥{r['price']:,.0f} / {r.get('cloud_position','—')}{ichi} / 出来高 {r['vr']:.2f}倍{candle}")
     else:
         lines = [f"📊 **Stocknote 朝スキャン**  {now}", f"母集団 {total}銘柄を確認しましたが、分析可能な買い候補はありませんでした。"]
     text = "\n".join(lines)
@@ -130,6 +135,8 @@ def main():
         if i % 25 == 0: print(f"scanned {i}/{len(items)}")
     results.sort(key=lambda x:x["score"], reverse=True)
     candidates = [row for row in results if row["score"] >= MIN_SCORE][:TOP_N]
+    if SEND_MEETING:
+        post_discord(candidates, len(items))
     # This is an upsert, never a replacement: a zero-result scan leaves the
     # active 14-day monitoring list untouched.
     events = merge_new_candidates(candidates)
