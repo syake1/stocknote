@@ -36,6 +36,58 @@ def parabolic_sar(high, low, step=0.02, maximum=0.2):
     return sar
 
 
+def daily_trend_context(hist):
+    """Return the daily uptrend/pullback gate used by every buy decision."""
+    if hist is None or hist.empty:
+        return None
+    frame = hist.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    if not {"Close", "High", "Low"}.issubset(frame.columns):
+        return None
+    close = pd.to_numeric(frame["Close"], errors="coerce").dropna()
+    if len(close) < 205:
+        return None
+    high = pd.to_numeric(frame.loc[close.index, "High"], errors="coerce")
+    low = pd.to_numeric(frame.loc[close.index, "Low"], errors="coerce")
+    ma75, ma200 = close.rolling(75).mean(), close.rolling(200).mean()
+    tenkan = (high.rolling(9).max() + low.rolling(9).min()) / 2
+    kijun = (high.rolling(26).max() + low.rolling(26).min()) / 2
+    span_a = ((tenkan + kijun) / 2).shift(26)
+    span_b = ((high.rolling(52).max() + low.rolling(52).min()) / 2).shift(26)
+    values = (ma75.iloc[-1], ma75.iloc[-6], ma200.iloc[-1], ma200.iloc[-6],
+              tenkan.iloc[-1], kijun.iloc[-1], span_a.iloc[-1], span_b.iloc[-1])
+    if any(pd.isna(x) for x in values):
+        return None
+    px = float(close.iloc[-1])
+    cloud_top, cloud_bottom = max(float(span_a.iloc[-1]), float(span_b.iloc[-1])), min(float(span_a.iloc[-1]), float(span_b.iloc[-1]))
+    cloud_position = "雲の上" if px > cloud_top else "雲の下" if px < cloud_bottom else "雲の中"
+    ma75_up = float(ma75.iloc[-1]) >= float(ma75.iloc[-6])
+    ma200_up = float(ma200.iloc[-1]) >= float(ma200.iloc[-6])
+    tenkan_above = float(tenkan.iloc[-1]) > float(kijun.iloc[-1])
+    tenkan_cross = bool(tenkan.iloc[-2] <= kijun.iloc[-2] and tenkan.iloc[-1] > kijun.iloc[-1])
+    chikou_confirmed = px > float(close.iloc[-27])
+    eligible = bool(cloud_position == "雲の上" and ma75_up and ma200_up and px >= float(ma200.iloc[-1]))
+    if cloud_position == "雲の下":
+        reason = "一目均衡表の雲の下"
+    elif cloud_position == "雲の中":
+        reason = "一目均衡表の雲の中（監視のみ）"
+    elif not ma75_up or not ma200_up:
+        reason = "75日線または200日線が下向き"
+    elif px < float(ma200.iloc[-1]):
+        reason = "株価が200日線より下"
+    else:
+        reason = "上昇基調の押し目対象"
+    return {
+        "cloud_top": cloud_top, "cloud_bottom": cloud_bottom,
+        "cloud_position": cloud_position, "tenkan": float(tenkan.iloc[-1]),
+        "kijun": float(kijun.iloc[-1]), "tenkan_above_kijun": tenkan_above,
+        "tenkan_cross_up": tenkan_cross, "chikou_confirmed": chikou_confirmed,
+        "ma75_up": ma75_up, "ma200_up": ma200_up,
+        "buy_eligible": eligible, "trend_reason": reason,
+    }
+
+
 def calculate(code, name, hist):
     if hist is None or hist.empty:
         return None
@@ -101,4 +153,19 @@ def download_and_calculate(code, name=None, intraday=False):
     period, interval = ("60d", "15m") if intraday else ("14mo", "1d")
     hist = yf.download(f"{code}.T", period=period, interval=interval,
                        auto_adjust=False, progress=False, threads=False)
-    return calculate(code, name, hist)
+    result = calculate(code, name, hist)
+    if result is None:
+        return None
+    daily = hist if not intraday else yf.download(
+        f"{code}.T", period="14mo", interval="1d", auto_adjust=False,
+        progress=False, threads=False)
+    trend = daily_trend_context(daily)
+    if trend:
+        result.update(trend)
+        # RSI is only a watch trigger. A failed daily trend gate can never
+        # become a buy-ready state from a high intraday countertrend score.
+        if not trend["buy_eligible"]:
+            result["score"] = min(result["score"], 44.0)
+        elif trend["tenkan_cross_up"] or trend["tenkan_above_kijun"]:
+            result["score"] = min(100.0, result["score"] + 8.0)
+    return result

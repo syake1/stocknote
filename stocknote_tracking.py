@@ -63,6 +63,8 @@ def _as_float(value):
 
 def classify(metrics):
     """Translate current real indicators into a stable monitoring state."""
+    if metrics.get("buy_eligible") is False:
+        return "条件悪化" if metrics.get("cloud_position") == "雲の下" else "監視継続"
     score = _as_float(metrics.get("score") or metrics.get("買いスコア"))
     if score is None:
         return "監視継続"
@@ -92,6 +94,9 @@ def _snapshot(candidate):
         "updated_at", "elapsed_days", "current_price", "return_pct", "status",
         "rsi", "bb_position", "ma5", "ma25", "ma75", "ma200", "macd",
         "macd_signal", "volume", "volume_ratio", "psar", "atr", "score",
+        "cloud_top", "cloud_bottom", "cloud_position", "tenkan", "kijun",
+        "tenkan_above_kijun", "tenkan_cross_up", "chikou_confirmed",
+        "ma75_up", "ma200_up", "buy_eligible", "trend_reason",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -142,6 +147,14 @@ def _metrics(row):
     for source, target in aliases.items():
         if source in row:
             out[target] = _as_float(row[source])
+    for key in ("cloud_position", "trend_reason", "tenkan_above_kijun",
+                "tenkan_cross_up", "chikou_confirmed", "ma75_up",
+                "ma200_up", "buy_eligible"):
+        if key in row:
+            out[key] = row[key]
+    for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun"):
+        if key in row:
+            out[key] = _as_float(row[key])
     return out
 
 

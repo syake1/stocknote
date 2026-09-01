@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from monitor_candidates import is_market_session
-from stocknote_technicals import calculate
+from stocknote_technicals import calculate, daily_trend_context
 
 
 class MonitorAndTechnicalTests(unittest.TestCase):
@@ -30,6 +30,22 @@ class MonitorAndTechnicalTests(unittest.TestCase):
                     "psar", "atr", "score"):
             self.assertIn(key, row)
             self.assertIsNotNone(row[key])
+
+    def test_ichimoku_gate_accepts_uptrend_above_cloud(self):
+        index = pd.date_range("2025-01-01", periods=260, freq="D")
+        close = pd.Series(np.linspace(100, 180, 260), index=index)
+        frame = pd.DataFrame({"High": close + 1, "Low": close - 1, "Close": close}, index=index)
+        trend = daily_trend_context(frame)
+        self.assertEqual(trend["cloud_position"], "雲の上")
+        self.assertTrue(trend["buy_eligible"])
+
+    def test_ichimoku_gate_rejects_falling_stock(self):
+        index = pd.date_range("2025-01-01", periods=260, freq="D")
+        close = pd.Series(np.linspace(180, 90, 260), index=index)
+        frame = pd.DataFrame({"High": close + 1, "Low": close - 1, "Close": close}, index=index)
+        trend = daily_trend_context(frame)
+        self.assertFalse(trend["buy_eligible"])
+        self.assertTrue(trend["cloud_position"] == "雲の下" or not trend["ma75_up"])
 
 
 if __name__ == "__main__":
