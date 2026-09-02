@@ -61,6 +61,30 @@ def _as_float(value):
         return None
 
 
+def holding_performance(entry_price, current_price, shares, side="買い"):
+    """Return signed per-share/total performance for an open position.
+
+    A positive value is a profit and a negative value is a loss. Missing or
+    invalid market data returns None so a guessed price never enters totals.
+    """
+    entry = _as_float(entry_price)
+    current = _as_float(current_price)
+    quantity = _as_float(shares)
+    if entry is None or entry <= 0 or current is None or quantity is None:
+        return None
+    per_share = current - entry
+    if side == "空売り":
+        per_share = -per_share
+    total = per_share * quantity
+    return {
+        "per_share": per_share,
+        "pnl": total,
+        "pnl_pct": per_share / entry * 100,
+        "loss": min(total, 0.0),
+        "profit": max(total, 0.0),
+    }
+
+
 def classify(metrics):
     """Translate current real indicators into a stable monitoring state."""
     if metrics.get("buy_eligible") is False:
