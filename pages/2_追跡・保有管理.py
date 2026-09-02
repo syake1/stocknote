@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from stocknote_tracking import load_active, load_history
+from stocknote_tracking import holding_performance, load_active, load_history
 
 st.set_page_config(page_title="Stocknote 追跡・保有管理", layout="wide")
 st.title("📌 Stocknote 追跡・保有管理")
@@ -248,19 +248,26 @@ prices = latest_prices(tuple(all_codes))
 
 market_value = 0.0
 unrealized = 0.0
+unrealized_loss = 0.0
+unrealized_profit = 0.0
+missing_price_count = 0
 if not open_df.empty:
     for _, r in open_df.iterrows():
-        cur = prices.get(r['code'])
+        cur = prices.get(normalize_code(r['code']))
         if cur is None:
+            missing_price_count += 1
             continue
         qty = float(r['shares'])
         entry = float(r['entry_price'])
+        performance = holding_performance(entry, cur, qty, r['side'])
         if r['side'] == '買い':
             market_value += cur * qty
-            unrealized += (cur - entry) * qty
         else:
             market_value += entry * qty
-            unrealized += (entry - cur) * qty
+        if performance:
+            unrealized += performance['pnl']
+            unrealized_loss += performance['loss']
+            unrealized_profit += performance['profit']
 
 realized = 0.0
 if not closed_df.empty:
@@ -275,12 +282,18 @@ if not closed_df.empty:
 cash = get_cash()
 total_assets = cash + market_value
 
-st.markdown("## 💰 現在資金")
+st.markdown("## 💰 現在資金・含み損益")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("現金", f"¥{cash:,.0f}")
 c2.metric("保有株評価額", f"¥{market_value:,.0f}")
 c3.metric("総資産", f"¥{total_assets:,.0f}")
-c4.metric("含み損益", f"¥{unrealized:,.0f}")
+c4.metric("含み損益合計", f"¥{unrealized:,.0f}")
+u1, u2, u3 = st.columns(3)
+u1.metric("🔴 含み損合計", f"-¥{abs(unrealized_loss):,.0f}" if unrealized_loss < 0 else "¥0")
+u2.metric("🟢 含み益合計", f"+¥{unrealized_profit:,.0f}" if unrealized_profit > 0 else "¥0")
+u3.metric("現在値取得済み", f"{len(open_df) - missing_price_count}/{len(open_df)}銘柄")
+if missing_price_count:
+    st.warning(f"現在値を取得できない{missing_price_count}銘柄は、含み損益合計の計算対象外です。推測値は使用していません。")
 st.caption(f"実現損益累計: ¥{realized:,.0f}")
 
 with st.expander("⚙️ 現在の現金残高を設定"):
@@ -330,15 +343,16 @@ with st.form("holding_form", clear_on_submit=True):
 if not open_df.empty:
     rows = []
     for _, r in open_df.iterrows():
-        cur = prices.get(r['code'])
-        pnl = None
-        pnl_pct = None
-        if cur is not None:
-            pnl = ((cur - r['entry_price']) if r['side'] == '買い' else (r['entry_price'] - cur)) * r['shares']
-            pnl_pct = return_pct(cur, r['entry_price'], r['side'])
+        cur = prices.get(normalize_code(r['code']))
+        performance = holding_performance(r['entry_price'], cur, r['shares'], r['side'])
         rows.append({
             'ID': int(r['id']), '区分': r['side'], 'コード': r['code'], '銘柄名': r['name'], '株数': r['shares'],
-            '取得/建値': r['entry_price'], '現在値': cur, '含み損益': pnl, '損益率%': pnl_pct, '取引日': r['trade_date']
+            '取得/建値': r['entry_price'], '現在値': cur,
+            '建値からの差/1株': performance['per_share'] if performance else None,
+            '含み損益': performance['pnl'] if performance else None,
+            '買値からの騰落率%': performance['pnl_pct'] if performance else None,
+            '判定': ('含み損' if performance['pnl'] < 0 else '含み益' if performance['pnl'] > 0 else 'トントン') if performance else '現在値未取得',
+            '取引日': r['trade_date']
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
