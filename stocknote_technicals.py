@@ -66,8 +66,11 @@ def daily_trend_context(hist):
     ma200_up = float(ma200.iloc[-1]) >= float(ma200.iloc[-6])
     tenkan_above = float(tenkan.iloc[-1]) > float(kijun.iloc[-1])
     tenkan_cross = bool(tenkan.iloc[-2] <= kijun.iloc[-2] and tenkan.iloc[-1] > kijun.iloc[-1])
+    tenkan_cross_down = bool(tenkan.iloc[-2] >= kijun.iloc[-2] and tenkan.iloc[-1] < kijun.iloc[-1])
     chikou_confirmed = px > float(close.iloc[-27])
     eligible = bool(cloud_position == "雲の上" and ma75_up and ma200_up and px >= float(ma200.iloc[-1]))
+    short_eligible = bool(cloud_position == "雲の下" and not ma75_up and not ma200_up
+                          and px <= float(ma200.iloc[-1]))
     if cloud_position == "雲の下":
         reason = "一目均衡表の雲の下"
     elif cloud_position == "雲の中":
@@ -82,9 +85,11 @@ def daily_trend_context(hist):
         "cloud_top": cloud_top, "cloud_bottom": cloud_bottom,
         "cloud_position": cloud_position, "tenkan": float(tenkan.iloc[-1]),
         "kijun": float(kijun.iloc[-1]), "tenkan_above_kijun": tenkan_above,
-        "tenkan_cross_up": tenkan_cross, "chikou_confirmed": chikou_confirmed,
+        "tenkan_cross_up": tenkan_cross, "tenkan_cross_down": tenkan_cross_down,
+        "chikou_confirmed": chikou_confirmed,
         "ma75_up": ma75_up, "ma200_up": ma200_up,
-        "buy_eligible": eligible, "trend_reason": reason,
+        "buy_eligible": eligible, "short_eligible": short_eligible,
+        "trend_reason": reason,
     }
 
 
