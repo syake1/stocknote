@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from stocknote_holding_analysis import analyze_holding, market_score
 from stocknote_tracking import holding_performance, load_active, load_history
 
 st.set_page_config(page_title="Stocknote 追跡・保有管理", layout="wide")
@@ -246,6 +247,17 @@ closed_df = holdings_df[holdings_df['status'] == '決済済'].copy() if not hold
 all_codes = open_df['code'].tolist() if not open_df.empty else []
 prices = latest_prices(tuple(all_codes))
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def current_holding_analysis(codes):
+    """Analyze registered holdings directly; scanner ranking changes do not affect this."""
+    current_market = market_score()
+    return {code: analyze_holding(code, current_market) for code in codes}
+
+
+normalized_open_codes = tuple(dict.fromkeys(normalize_code(c) for c in all_codes if normalize_code(c)))
+holding_analysis = current_holding_analysis(normalized_open_codes) if normalized_open_codes else {}
+
 market_value = 0.0
 unrealized = 0.0
 unrealized_loss = 0.0
@@ -343,8 +355,10 @@ with st.form("holding_form", clear_on_submit=True):
 if not open_df.empty:
     rows = []
     for _, r in open_df.iterrows():
-        cur = prices.get(normalize_code(r['code']))
+        normalized_code = normalize_code(r['code'])
+        cur = prices.get(normalized_code)
         performance = holding_performance(r['entry_price'], cur, r['shares'], r['side'])
+        analysis = holding_analysis.get(normalized_code, {})
         rows.append({
             'ID': int(r['id']), '区分': r['side'], 'コード': r['code'], '銘柄名': r['name'], '株数': r['shares'],
             '取得/建値': r['entry_price'], '現在値': cur,
@@ -352,9 +366,40 @@ if not open_df.empty:
             '含み損益': performance['pnl'] if performance else None,
             '買値からの騰落率%': performance['pnl_pct'] if performance else None,
             '判定': ('含み損' if performance['pnl'] < 0 else '含み益' if performance['pnl'] > 0 else 'トントン') if performance else '現在値未取得',
+            '現在の総合得点': analysis.get('total_score'),
+            'テクニカル点': analysis.get('technical_score'),
+            'ファンダメンタル点': analysis.get('fundamental_score'),
+            '市場環境点': analysis.get('market_score'),
+            'RSI14': analysis.get('rsi'), 'PER': analysis.get('per'),
+            '一目位置': analysis.get('cloud_position'), '現在の評価理由': analysis.get('trend_reason') or analysis.get('error'),
             '取引日': r['trade_date']
         })
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    holdings_view = pd.DataFrame(rows)
+    st.markdown("### 📊 保有銘柄の現在評価")
+    st.caption("再スキャンのランキングとは別に、登録済み銘柄を現在データで直接再分析しています。")
+    st.dataframe(holdings_view, hide_index=True, use_container_width=True,
+                 column_config={
+                     "現在の総合得点": st.column_config.NumberColumn(format="%.1f / 100"),
+                     "テクニカル点": st.column_config.NumberColumn(format="%.1f"),
+                     "ファンダメンタル点": st.column_config.NumberColumn(format="%.1f"),
+                     "市場環境点": st.column_config.NumberColumn(format="%.1f"),
+                     "買値からの騰落率%": st.column_config.NumberColumn(format="%.2f%%"),
+                 })
+
+    score_rows = [r for r in rows if r.get('現在の総合得点') is not None]
+    if score_rows:
+        selected_score_code = st.selectbox(
+            "詳細を見る保有銘柄",
+            [r['コード'] for r in score_rows],
+            format_func=lambda c: next(f"{r['コード']} {r['銘柄名']}" for r in score_rows if r['コード'] == c),
+        )
+        selected = next(r for r in score_rows if r['コード'] == selected_score_code)
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("現在の総合得点", f"{selected['現在の総合得点']:.1f}/100")
+        s2.metric("テクニカル", f"{selected['テクニカル点']:.1f}/100")
+        s3.metric("ファンダメンタル", f"{selected['ファンダメンタル点']:.1f}/100")
+        s4.metric("市場環境", f"{selected['市場環境点']:.1f}/100")
+        st.caption("総合得点 = テクニカル50% + ファンダメンタル35% + 市場環境15%")
 
     st.markdown("### ✏️ 登録内容の編集・削除")
     edit_ids = [int(x) for x in open_df['id'].tolist()]
