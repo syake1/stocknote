@@ -113,6 +113,29 @@ def normalize_code(value):
     return m.group(1) if m else ''
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def company_name_from_code(code):
+    """Resolve a real company name from the saved SBI universe, then Yahoo."""
+    code = normalize_code(code)
+    if not code:
+        return ""
+    universe_path = os.getenv("STOCKNOTE_UNIVERSE", "data/saved_universe.csv")
+    try:
+        universe = pd.read_csv(universe_path, dtype=str, encoding="utf-8-sig")
+        if "コード" in universe.columns and "銘柄名" in universe.columns:
+            codes = universe["コード"].astype(str).map(normalize_code)
+            matched = universe.loc[codes == code, "銘柄名"].dropna()
+            if not matched.empty and str(matched.iloc[0]).strip():
+                return str(matched.iloc[0]).strip()
+    except Exception:
+        pass
+    try:
+        info = yf.Ticker(f"{code}.T").info or {}
+        return str(info.get("longName") or info.get("shortName") or "").strip()
+    except Exception:
+        return ""
+
+
 def get_cash():
     with db() as con:
         row = con.execute("SELECT value FROM settings WHERE key='cash'").fetchone()
@@ -269,10 +292,16 @@ with st.expander("⚙️ 現在の現金残高を設定"):
 
 # ======================== 実保有 ========================
 st.markdown("## 🧾 実際に買った・空売りした銘柄")
+register_code_raw = st.text_input("証券コードを入力", placeholder="例 7203", key="register_code_lookup")
+code = normalize_code(register_code_raw)
+resolved_name = company_name_from_code(code) if code else ""
+if resolved_name:
+    st.success(f"銘柄名：{resolved_name}")
+elif code:
+    st.warning("銘柄名を自動取得できませんでした。名称を確認して手入力してください。")
 with st.form("holding_form", clear_on_submit=True):
-    a, b, c, d = st.columns(4)
-    code = normalize_code(a.text_input("証券コード", placeholder="例 7203"))
-    name = b.text_input("銘柄名")
+    b, c, d = st.columns(3)
+    name = b.text_input("銘柄名", value=resolved_name, key=f"register_name_{code or 'empty'}")
     side = c.selectbox("区分", ["買い", "空売り"])
     trade_date = d.date_input("取引日", value=date.today())
     e, f, g = st.columns(3)
@@ -321,10 +350,16 @@ if not open_df.empty:
         initial_date = date.fromisoformat(str(edit_row['trade_date']))
     except ValueError:
         initial_date = date.today()
+    edit_code_raw = st.text_input("編集する証券コード", value=str(edit_row['code']), key=f"edit_code_{edit_id}")
+    edit_code_normalized = normalize_code(edit_code_raw)
+    resolved_edit_name = company_name_from_code(edit_code_normalized) if edit_code_normalized else ""
+    if resolved_edit_name:
+        st.caption(f"自動取得した銘柄名：{resolved_edit_name}")
     with st.form("edit_holding_form"):
-        ea, eb, ec, ed = st.columns(4)
-        edit_code_raw = ea.text_input("証券コード", value=str(edit_row['code']), key="edit_code")
-        edit_name = eb.text_input("銘柄名", value=str(edit_row['name'] or ''), key="edit_name")
+        eb, ec, ed = st.columns(3)
+        default_edit_name = resolved_edit_name or str(edit_row['name'] or '')
+        edit_name = eb.text_input("銘柄名", value=default_edit_name,
+                                  key=f"edit_name_{edit_id}_{edit_code_normalized or 'empty'}")
         side_options = ["買い", "空売り"]
         edit_side = ec.selectbox("区分", side_options,
                                  index=side_options.index(edit_row['side']) if edit_row['side'] in side_options else 0,
@@ -338,7 +373,7 @@ if not open_df.empty:
         edit_note = eg.text_input("メモ", value=str(edit_row['note'] or ''), key="edit_note")
         edit_submit = st.form_submit_button("変更を保存")
         if edit_submit:
-            edit_code = normalize_code(edit_code_raw)
+            edit_code = edit_code_normalized
             if not edit_code or edit_price <= 0:
                 st.error("証券コードと価格を正しく入力してください。")
             else:
@@ -382,10 +417,15 @@ else:
 
 # ======================== 候補追跡 ========================
 st.markdown("## 📈 買い候補・空売り候補の経過追跡")
+tracking_code_raw = st.text_input("候補コードを入力", placeholder="例 7203", key="tracking_code_lookup")
+t_code = normalize_code(tracking_code_raw)
+resolved_tracking_name = company_name_from_code(t_code) if t_code else ""
+if resolved_tracking_name:
+    st.caption(f"銘柄名：{resolved_tracking_name}")
 with st.form("tracking_form", clear_on_submit=True):
-    a, b, c, d = st.columns(4)
-    t_code = normalize_code(a.text_input("候補コード", placeholder="例 7203"))
-    t_name = b.text_input("候補銘柄名")
+    b, c, d = st.columns(3)
+    t_name = b.text_input("候補銘柄名", value=resolved_tracking_name,
+                          key=f"tracking_name_{t_code or 'empty'}")
     t_side = c.selectbox("候補区分", ["買い", "空売り"], key='track_side')
     t_date = d.date_input("シグナル日", value=date.today())
     e, f, g = st.columns(3)
