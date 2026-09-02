@@ -15,6 +15,7 @@ from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
 from stocknote_tracking import load_active, merge_new_candidates
 from stocknote_technicals import daily_trend_context
+from stocknote_short import assess_short, number
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
@@ -176,7 +177,7 @@ def technical_scores(code, name, hist):
             if avg > 0:
                 vr = float(v.iloc[-1] / avg)
 
-    reversal = upper_wick_bear = False
+    reversal = upper_wick_bear = bearish_engulfing = False
     if all(c in hist.columns for c in ["Open", "High"]):
         o = pd.to_numeric(hist["Open"], errors="coerce").dropna()
         hi = pd.to_numeric(hist["High"], errors="coerce").dropna()
@@ -184,6 +185,7 @@ def technical_scores(code, name, hist):
             cprev, oprev = float(close.iloc[-2]), float(o.iloc[-2])
             cnow, onow = float(close.iloc[-1]), float(o.iloc[-1])
             reversal = bool(cprev < oprev and cnow > onow and cnow >= oprev and onow <= cprev)
+            bearish_engulfing = bool(cprev > oprev and cnow < onow and cnow <= oprev and onow >= cprev)
             body = abs(cnow - onow)
             upper_wick = float(hi.iloc[-1]) - max(cnow, onow)
             upper_wick_bear = bool(cnow < onow and upper_wick > max(body * 1.5, px * 0.003))
@@ -204,23 +206,32 @@ def technical_scores(code, name, hist):
     short_trend = (12.0 if m25 <= m75 else 4.0) + (5.0 if np.isfinite(m200) and px < m200 else 0.0)
     short_macd = 8.0 if md < sg else 2.0
     short_volume = float(np.clip((vr - 0.8) * 6, 0, 8))
-    short_candle = 12.0 if upper_wick_bear else 0.0
+    short_candle = 12.0 if bearish_engulfing else 8.0 if upper_wick_bear else 0.0
     short_score = float(np.clip(short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle, 0, 100))
+    short_trend_ok = bool(trend and trend.get("short_eligible"))
+    if not short_trend_ok:
+        short_score = min(short_score, 44.0)
+    elif trend.get("tenkan_cross_down"):
+        short_score = min(100.0, short_score + 8.0)
 
     return {
         "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv,
         "出来高倍率": vr, "MA25": m25, "MA75": m75, "MA200": m200,
         "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
-        "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear,
+        "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear, "包み陰線": bearish_engulfing,
         "買いスコア": buy_score, "空売りスコア": short_score,
         "買い対象": bool(trend and trend["buy_eligible"]),
         "一目位置": trend["cloud_position"] if trend else "データ不足",
         "転換線": trend["tenkan"] if trend else np.nan,
         "基準線": trend["kijun"] if trend else np.nan,
         "転換線上抜け": bool(trend and trend["tenkan_cross_up"]),
+        "転換線下抜け": bool(trend and trend.get("tenkan_cross_down")),
+        "空売りトレンド適合": short_trend_ok,
         "トレンド判定": trend["trend_reason"] if trend else "日足履歴不足",
         "買い内訳": {"RSI": buy_rsi, "BB": buy_bb, "トレンド": buy_trend,
                      "MACD": buy_macd, "出来高": buy_volume, "ローソク足": buy_candle},
+        "空売り内訳": {"RSI": short_rsi, "BB": short_bb, "トレンド": short_trend,
+                       "MACD": short_macd, "出来高": short_volume, "ローソク足": short_candle},
         "error": None,
     }
 
@@ -535,9 +546,19 @@ if st.session_state.scan_results is not None:
     if not ok:
         st.error("分析できた銘柄がありません。")
     else:
+        universe_by_code = {str(r.get("コード", "")).strip(): r.to_dict() for _, r in u.iterrows()}
+        # A known forecast PER above 25 is watch-only for the user's value-oriented buy rules.
+        for r in ok:
+            source = universe_by_code.get(str(r["コード"]), {})
+            forecast_per = number(source.get("PER(株価収益率)(予)(倍)"))
+            r["予想PER"] = forecast_per
+            if forecast_per is not None and forecast_per > 25 and r.get("買い対象"):
+                r["買い対象"] = False
+                r["トレンド判定"] = "予想PER25倍超（買いは監視のみ）"
         buy = sorted([r for r in ok if r.get("買い対象")], key=lambda x: x["買いスコア"], reverse=True)
         watch_only = sorted([r for r in ok if not r.get("買い対象")], key=lambda x: x["買いスコア"], reverse=True)
-        short = sorted(ok, key=lambda x: x["空売りスコア"], reverse=True)
+        short_pre = sorted([r for r in ok if r.get("空売りトレンド適合")],
+                           key=lambda x: x["空売りスコア"], reverse=True)[:20]
         if performed_scan:
             new_candidates = []
             for r in buy:
@@ -556,6 +577,13 @@ if st.session_state.scan_results is not None:
             merge_new_candidates(new_candidates)
         with st.spinner("市場環境を確認中…"):
             market_score, regime, market_note = market_employee_score()
+        short = []
+        with st.spinner("信用売り候補のファンダメンタルを確認中…"):
+            for r in short_pre:
+                f = fundamental_employee(r["コード"])
+                r.update(assess_short(r, f, universe_by_code.get(str(r["コード"]), {}), market_score))
+                short.append(r)
+        short.sort(key=lambda x: x["空売り総合評価"], reverse=True)
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
 
         tab_buy, tab_short, tab_meeting = st.tabs(["📈 買い候補", "📉 空売り候補", "👥 AI社員会議"])
@@ -584,14 +612,16 @@ if st.session_state.scan_results is not None:
                                  hide_index=True, use_container_width=True)
 
         with tab_short:
-            st.subheader("空売り候補ランキング")
-            st.caption("🔵 75点以上＝空売り条件到達　薄い青＝65〜74.9点・条件接近")
-            cols = ["コード", "銘柄名", "空売りスコア", "RSI14", "現在値", "出来高倍率",
-                    "BB上限", "MA25", "MA75", "上ヒゲ陰線"]
-            short_table = pd.DataFrame(short)[cols].head(50)
-            st.dataframe(short_table.style.apply(highlight_short_score, axis=1),
-                         hide_index=True, use_container_width=True)
-            st.caption("空売りは貸借銘柄・在庫・逆日歩など売建可否を証券会社で別途確認してください。")
+            st.subheader("信用売り総合ランキング")
+            st.caption("下降トレンド・割高/業績・信用倍率・市場環境を総合評価します。信用情報がない銘柄は実行候補にしません。")
+            if short:
+                cols = ["コード", "銘柄名", "空売り総合評価", "空売り状態", "予想PER", "信用倍率",
+                        "貸借確認", "空売りスコア", "空売りファンダ", "RSI14", "一目位置",
+                        "転換線下抜け", "包み陰線", "出来高倍率", "空売り理由"]
+                st.dataframe(pd.DataFrame(short)[cols].head(20), hide_index=True, use_container_width=True)
+            else:
+                st.info("現在、日足の下降トレンド条件を満たす信用売り候補はありません。")
+            st.warning("発注前にSBIで売建可能数・貸株料・逆日歩・決算日を必ず確認してください。Stocknoteは自動発注しません。")
 
         with tab_meeting:
             st.write("上位候補をテクニカル・ファンダメンタル・市場環境の3社員で再評価します。")
@@ -599,7 +629,11 @@ if st.session_state.scan_results is not None:
                 st.markdown("#### 買い会議")
                 st.dataframe(meeting_rows(buy, "buy", market_score), hide_index=True, use_container_width=True)
                 st.markdown("#### 空売り会議")
-                st.dataframe(meeting_rows(short, "short", market_score), hide_index=True, use_container_width=True)
+                if short:
+                    st.dataframe(pd.DataFrame(short)[["コード", "銘柄名", "空売り総合評価", "空売り状態", "予想PER", "信用倍率", "空売り理由"]].head(5),
+                                 hide_index=True, use_container_width=True)
+                else:
+                    st.info("信用売り会議の対象はありません。")
 
     if bad:
         with st.expander(f"⚠️ 分析できなかった銘柄（{len(bad)}件）"):
