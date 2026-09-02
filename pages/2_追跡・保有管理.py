@@ -125,6 +125,42 @@ def set_cash(value):
         con.commit()
 
 
+def entry_cash_effect(side, shares, price):
+    """Cash movement recorded when an open position is first registered."""
+    amount = float(shares) * float(price)
+    return -amount if side == '買い' else amount
+
+
+def update_open_holding(holding_id, code, name, side, trade_date, shares, entry_price, note):
+    """Correct one open entry and apply only its cash difference."""
+    with db() as con:
+        old = con.execute("SELECT * FROM holdings WHERE id=? AND status='保有中'", (int(holding_id),)).fetchone()
+        if old is None:
+            raise ValueError("編集対象の保有銘柄が見つかりません。")
+        old_effect = entry_cash_effect(old['side'], old['shares'], old['entry_price'])
+        new_effect = entry_cash_effect(side, shares, entry_price)
+        con.execute(
+            """UPDATE holdings
+               SET code=?, name=?, side=?, trade_date=?, shares=?, entry_price=?, note=?
+               WHERE id=? AND status='保有中'""",
+            (code, name, side, trade_date, float(shares), float(entry_price), note, int(holding_id)),
+        )
+        con.commit()
+    set_cash(max(0.0, get_cash() + new_effect - old_effect))
+
+
+def delete_open_holding(holding_id):
+    """Delete only the selected open entry and undo its original cash movement."""
+    with db() as con:
+        old = con.execute("SELECT * FROM holdings WHERE id=? AND status='保有中'", (int(holding_id),)).fetchone()
+        if old is None:
+            raise ValueError("削除対象の保有銘柄が見つかりません。")
+        old_effect = entry_cash_effect(old['side'], old['shares'], old['entry_price'])
+        con.execute("DELETE FROM holdings WHERE id=? AND status='保有中'", (int(holding_id),))
+        con.commit()
+    set_cash(max(0.0, get_cash() - old_effect))
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def latest_prices(codes):
     codes = [normalize_code(c) for c in codes]
@@ -276,6 +312,49 @@ if not open_df.empty:
             '取得/建値': r['entry_price'], '現在値': cur, '含み損益': pnl, '損益率%': pnl_pct, '取引日': r['trade_date']
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    st.markdown("### ✏️ 登録内容の編集・削除")
+    edit_ids = [int(x) for x in open_df['id'].tolist()]
+    edit_id = st.selectbox("編集・削除するID", edit_ids, key="edit_holding_id")
+    edit_row = open_df[open_df['id'] == edit_id].iloc[0]
+    try:
+        initial_date = date.fromisoformat(str(edit_row['trade_date']))
+    except ValueError:
+        initial_date = date.today()
+    with st.form("edit_holding_form"):
+        ea, eb, ec, ed = st.columns(4)
+        edit_code_raw = ea.text_input("証券コード", value=str(edit_row['code']), key="edit_code")
+        edit_name = eb.text_input("銘柄名", value=str(edit_row['name'] or ''), key="edit_name")
+        side_options = ["買い", "空売り"]
+        edit_side = ec.selectbox("区分", side_options,
+                                 index=side_options.index(edit_row['side']) if edit_row['side'] in side_options else 0,
+                                 key="edit_side")
+        edit_date = ed.date_input("取引日", value=initial_date, key="edit_trade_date")
+        ee, ef, eg = st.columns(3)
+        edit_shares = ee.number_input("株数", min_value=1.0, step=100.0,
+                                      value=float(edit_row['shares']), key="edit_shares")
+        edit_price = ef.number_input("買値 / 売建値", min_value=0.0, step=1.0,
+                                     value=float(edit_row['entry_price']), key="edit_entry_price")
+        edit_note = eg.text_input("メモ", value=str(edit_row['note'] or ''), key="edit_note")
+        edit_submit = st.form_submit_button("変更を保存")
+        if edit_submit:
+            edit_code = normalize_code(edit_code_raw)
+            if not edit_code or edit_price <= 0:
+                st.error("証券コードと価格を正しく入力してください。")
+            else:
+                update_open_holding(edit_id, edit_code, edit_name, edit_side,
+                                    edit_date.isoformat(), edit_shares, edit_price, edit_note)
+                st.success("登録内容を修正し、差額を現金残高へ反映しました。")
+                st.rerun()
+
+    with st.expander("🗑️ 間違って登録した銘柄を削除"):
+        st.warning(f"ID {edit_id}：{edit_row['code']} {edit_row['name'] or ''} だけを削除します。決済ではなく、誤登録の取り消しです。")
+        confirm_delete = st.checkbox("この1件を削除することを確認しました", key=f"confirm_delete_{edit_id}")
+        if st.button("この登録を削除", type="secondary", disabled=not confirm_delete,
+                     key=f"delete_holding_{edit_id}"):
+            delete_open_holding(edit_id)
+            st.success("誤登録を削除し、登録時の現金増減を元に戻しました。")
+            st.rerun()
 
     st.markdown("### 決済・損切り・利確")
     ids = [int(x) for x in open_df['id'].tolist()]
