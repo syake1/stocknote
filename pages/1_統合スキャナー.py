@@ -373,29 +373,45 @@ def highlight_short_score(row):
     return styles
 
 
-def detail_history(code):
-    h = one_download(code, "10mo", "1d")
+TIMEFRAME_CONFIG = {
+    "日足": {"period": "2y", "interval": "1d", "windows": (25, 75, 200), "bars": 180},
+    "週足": {"period": "10y", "interval": "1wk", "windows": (13, 26, 52), "bars": 156},
+    "月足": {"period": "max", "interval": "1mo", "windows": (6, 12, 24), "bars": 120},
+    "四半期足": {"period": "max", "interval": "1mo", "windows": (4, 8, 12), "bars": 80},
+}
+
+
+def detail_history(code, timeframe="日足"):
+    config = TIMEFRAME_CONFIG[timeframe]
+    h = one_download(code, config["period"], config["interval"])
     if h.empty or "Close" not in h:
         return pd.DataFrame()
     h = h.copy()
+    if timeframe == "四半期足":
+        aggregations = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        if "Volume" in h.columns:
+            aggregations["Volume"] = "sum"
+        h = h.resample("QE-DEC").agg(aggregations).dropna(subset=["Close"])
     c = pd.to_numeric(h["Close"], errors="coerce")
-    h["MA25"] = c.rolling(25).mean()
-    h["MA75"] = c.rolling(75).mean()
-    h["MA200"] = c.rolling(200).mean()
-    std = c.rolling(25).std()
-    h["BB上限"] = h["MA25"] + 2 * std
-    h["BB下限"] = h["MA25"] - 2 * std
+    short, middle, long = config["windows"]
+    h["MA短期"] = c.rolling(short).mean()
+    h["MA中期"] = c.rolling(middle).mean()
+    h["MA長期"] = c.rolling(long).mean()
+    std = c.rolling(middle).std()
+    h["BB上限"] = h["MA中期"] + 2 * std
+    h["BB下限"] = h["MA中期"] - 2 * std
     h["RSI14"] = rsi14(c)
     return h
 
 
-def price_chart(h):
+def price_chart(h, timeframe):
+    windows = TIMEFRAME_CONFIG[timeframe]["windows"]
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
         x=h.index, open=h["Open"], high=h["High"], low=h["Low"], close=h["Close"], name="株価",
         increasing_line_color="#ef4444", increasing_fillcolor="#ef4444",
         decreasing_line_color="#3b82f6", decreasing_fillcolor="#3b82f6"))
-    for col, label in [("MA25", "MA25"), ("MA75", "MA75"), ("MA200", "MA200"),
+    for col, label in [("MA短期", f"MA{windows[0]}"), ("MA中期", f"MA{windows[1]}"), ("MA長期", f"MA{windows[2]}"),
                        ("BB上限", "+2σ"), ("BB下限", "-2σ")]:
         fig.add_trace(go.Scatter(x=h.index, y=h[col], mode="lines", name=label))
     fig.update_layout(height=520, xaxis_rangeslider_visible=False,
@@ -470,16 +486,30 @@ def show_buy_detail(row, market_score):
                 if key in labels:
                     st.caption(f"{labels[key]}: {source}")
 
-    h = detail_history(row["コード"])
+    timeframe = st.selectbox("チャートの期間", list(TIMEFRAME_CONFIG), key=f"timeframe_{row['コード']}")
+    h = detail_history(row["コード"], timeframe)
     if not h.empty and all(c in h.columns for c in ["Open", "High", "Low", "Close"]):
-        st.markdown("#### 📈 日足チャート：ローソク足・移動平均・ボリンジャーバンド")
+        st.markdown(f"#### 📈 {timeframe}チャート：ローソク足・移動平均・ボリンジャーバンド")
         last = h.dropna(subset=["Open", "Close"]).iloc[-1]
         last_date = pd.Timestamp(last.name).strftime("%Y/%m/%d")
         direction = "赤・上昇足" if float(last["Close"]) >= float(last["Open"]) else "青・下降足"
-        st.caption(f"最終足 {last_date}：始値 ¥{float(last['Open']):,.0f} → 終値 ¥{float(last['Close']):,.0f}（{direction}）")
-        st.plotly_chart(price_chart(h.tail(180)), use_container_width=True, config={"displayModeBar": False})
-        st.markdown("#### RSI14")
-        st.plotly_chart(rsi_chart(h.tail(180)), use_container_width=True, config={"displayModeBar": False})
+        forming = ""
+        today = pd.Timestamp.now()
+        if timeframe == "日足" and pd.Timestamp(last.name).date() >= today.date():
+            forming = "・形成中"
+        elif timeframe == "週足" and pd.Timestamp(last.name).to_period("W") == today.to_period("W"):
+            forming = "・形成中"
+        elif timeframe == "月足" and pd.Timestamp(last.name).to_period("M") == today.to_period("M"):
+            forming = "・形成中"
+        elif timeframe == "四半期足" and pd.Timestamp(last.name).to_period("Q") == today.to_period("Q"):
+            forming = "・形成中"
+        st.caption(f"最終足 {last_date}{forming}：始値 ¥{float(last['Open']):,.0f} → 終値 ¥{float(last['Close']):,.0f}（{direction}）")
+        if forming:
+            st.warning(f"現在の{timeframe}は未確定です。上ヒゲや終値は期間終了まで変化します。")
+        bars = TIMEFRAME_CONFIG[timeframe]["bars"]
+        st.plotly_chart(price_chart(h.tail(bars), timeframe), use_container_width=True, config={"displayModeBar": False})
+        st.markdown(f"#### {timeframe} RSI14")
+        st.plotly_chart(rsi_chart(h.tail(bars)), use_container_width=True, config={"displayModeBar": False})
     else:
         st.warning("詳細チャート用の株価データを取得できませんでした。")
 
