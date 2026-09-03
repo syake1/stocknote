@@ -203,7 +203,8 @@ def technical_scores(code, name, hist):
     ichimoku = 8.0 if trend and trend["tenkan_cross_up"] else 5.0 if trend and trend["tenkan_above_kijun"] else 0.0
     buy_score = float(np.clip(buy_rsi + buy_bb + buy_trend + buy_macd + buy_volume + buy_candle + ichimoku, 0, 100))
     quarterly_ok = bool(quarterly and quarterly["quarterly_qualified"])
-    if not trend or not trend["buy_eligible"] or not quarterly_ok:
+    daily_bb_overextended = bool(px > bup * 1.03)
+    if not trend or not trend["buy_eligible"] or not quarterly_ok or daily_bb_overextended:
         buy_score = min(buy_score, 44.0)
 
     short_rsi = float(np.clip((rv - 55) / 25 * 35, 0, 35))
@@ -225,13 +226,16 @@ def technical_scores(code, name, hist):
         "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
         "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear, "包み陰線": bearish_engulfing,
         "買いスコア": buy_score, "空売りスコア": short_score,
-        "買い対象": bool(trend and trend["buy_eligible"] and quarterly_ok),
+        "買い対象": bool(trend and trend["buy_eligible"] and quarterly_ok and not daily_bb_overextended),
         "四半期足強度": quarterly["quarterly_score"] if quarterly else 0.0,
         "四半期足適合": quarterly_ok,
         "四半期足判定": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
         "四半期RSI14": quarterly["quarterly_rsi"] if quarterly else np.nan,
         "四半期MACD上向き": quarterly["quarterly_macd_up"] if quarterly else False,
         "四半期大上ヒゲ": quarterly["quarterly_large_upper_wick"] if quarterly else False,
+        "月足大上ヒゲ": quarterly["monthly_large_upper_wick"] if quarterly else False,
+        "日足BB上抜け過熱": daily_bb_overextended,
+        "日足BB上方乖離%": float((px / bup - 1) * 100),
         "確定四半期": quarterly["quarterly_last_confirmed"] if quarterly else None,
         "一目位置": trend["cloud_position"] if trend else "データ不足",
         "転換線": trend["tenkan"] if trend else np.nan,
@@ -637,7 +641,7 @@ if st.session_state.scan_results is not None:
             st.subheader("買い候補ランキング")
             st.caption("🔴 75点以上＝買い条件到達　🟡 65〜74.9点＝買い条件接近")
             st.caption("四半期足強度70点以上＋日足が雲の上＋75日線/200日線が上向きの銘柄だけを表示します。四半期RSIが高くても、きれいな上昇中は減点しません。")
-            cols = ["コード", "銘柄名", "四半期足強度", "四半期RSI14", "買いスコア", "RSI14", "現在値", "一目位置",
+            cols = ["コード", "銘柄名", "四半期足強度", "四半期RSI14", "買いスコア", "RSI14", "現在値", "日足BB上方乖離%", "一目位置",
                     "転換線", "基準線", "転換線上抜け", "出来高倍率", "包み陽線"]
             if buy:
                 buy_table = pd.DataFrame(buy)[cols].head(50)
@@ -654,7 +658,7 @@ if st.session_state.scan_results is not None:
                 st.info("現在、上昇トレンド押し目の必須条件を満たす買い候補はありません。")
             with st.expander(f"監視のみ・除外銘柄（{len(watch_only)}件）"):
                 if watch_only:
-                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "四半期足強度", "四半期RSI14", "四半期足判定", "RSI14", "一目位置", "トレンド判定"]].head(100),
+                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "四半期足強度", "四半期RSI14", "四半期足判定", "月足大上ヒゲ", "日足BB上抜け過熱", "RSI14", "一目位置", "トレンド判定"]].head(100),
                                  hide_index=True, use_container_width=True)
 
         with tab_short:
