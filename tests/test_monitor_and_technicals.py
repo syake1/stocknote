@@ -73,6 +73,20 @@ class MonitorAndTechnicalTests(unittest.TestCase):
         self.assertFalse(result["quarterly_qualified"])
         self.assertLess(result["quarterly_score"], 70)
 
+    def test_strong_trend_with_large_quarterly_wick_is_watch_only(self):
+        index = pd.date_range("2021-01-01", "2026-06-30", freq="B")
+        close = pd.Series(np.linspace(100, 240, len(index)), index=index)
+        frame = pd.DataFrame({
+            "Open": close * 0.98, "High": close * 1.02,
+            "Low": close * 0.97, "Close": close,
+        }, index=index)
+        last_quarter = frame.index.to_period("Q") == pd.Period("2026Q2")
+        frame.loc[last_quarter, "High"] = frame.loc[last_quarter, "Close"].max() * 1.25
+        result = quarterly_strength_context(frame, now="2026-08-15")
+        self.assertTrue(result["quarterly_large_upper_wick"])
+        self.assertFalse(result["quarterly_qualified"])
+        self.assertIn("上ヒゲ", result["quarterly_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
