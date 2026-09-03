@@ -4,6 +4,10 @@ import pandas as pd
 import yfinance as yf
 
 
+# Incremented when the scanner and shared quarterly analysis must redeploy together.
+QUARTERLY_STRENGTH_VERSION = 1
+
+
 def rsi14(close):
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
