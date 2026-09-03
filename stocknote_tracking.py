@@ -123,6 +123,8 @@ def _snapshot(candidate):
         "ma75_up", "ma200_up", "buy_eligible", "trend_reason",
         "quarterly_score", "quarterly_rsi", "quarterly_qualified",
         "quarterly_reason", "quarterly_last_confirmed",
+        "quarterly_large_upper_wick", "monthly_large_upper_wick",
+        "multi_timeframe_wick_risk", "daily_bb_overextended",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -176,7 +178,9 @@ def _metrics(row):
     for key in ("cloud_position", "trend_reason", "tenkan_above_kijun",
                 "tenkan_cross_up", "chikou_confirmed", "ma75_up",
                 "ma200_up", "buy_eligible", "quarterly_qualified",
-                "quarterly_reason", "quarterly_last_confirmed"):
+                "quarterly_reason", "quarterly_last_confirmed",
+                "quarterly_large_upper_wick", "monthly_large_upper_wick",
+                "multi_timeframe_wick_risk", "daily_bb_overextended"):
         if key in row:
             out[key] = row[key]
     for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",
