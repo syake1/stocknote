@@ -9,7 +9,10 @@ def rsi14(close):
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
-    return (100 - 100 / (1 + rs)).fillna(50)
+    value = 100 - 100 / (1 + rs)
+    value = value.mask((loss == 0) & (gain > 0), 100.0)
+    value = value.mask((loss == 0) & (gain == 0), 50.0)
+    return value.fillna(50)
 
 
 def parabolic_sar(high, low, step=0.02, maximum=0.2):
@@ -93,6 +96,102 @@ def daily_trend_context(hist):
     }
 
 
+def quarterly_strength_context(hist, now=None):
+    """Score a clean multi-year uptrend using confirmed quarterly candles.
+
+    Quarterly RSI is reported but never used as a negative condition.  A high
+    RSI accompanied by rising candles, moving averages and MACD is treated as
+    trend strength.  The current unfinished quarter is excluded from the
+    score because its candle can still change before quarter-end.
+    """
+    if hist is None or hist.empty:
+        return None
+    frame = hist.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    required = {"Open", "High", "Low", "Close"}
+    if not required.issubset(frame.columns):
+        return None
+    for column in required | ({"Volume"} if "Volume" in frame else set()):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    aggregation = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+    if "Volume" in frame:
+        aggregation["Volume"] = "sum"
+    quarterly = frame.resample("QE-DEC").agg(aggregation).dropna(subset=list(required))
+    if quarterly.empty:
+        return None
+    reference = pd.Timestamp(now) if now is not None else pd.Timestamp.now()
+    if quarterly.index[-1].to_period("Q") == reference.to_period("Q"):
+        forming = quarterly.iloc[-1].copy()
+        confirmed = quarterly.iloc[:-1].copy()
+    else:
+        forming = None
+        confirmed = quarterly.copy()
+    if len(confirmed) < 14:
+        return None
+
+    close, high, low, open_ = (confirmed[c] for c in ("Close", "High", "Low", "Open"))
+    ma4, ma8, ma12 = close.rolling(4).mean(), close.rolling(8).mean(), close.rolling(12).mean()
+    macd = close.ewm(span=4, adjust=False).mean() - close.ewm(span=8, adjust=False).mean()
+    signal = macd.ewm(span=3, adjust=False).mean()
+    quarter_rsi = float(rsi14(close).iloc[-1])
+    recent = confirmed.tail(4)
+    close_rises = int((recent["Close"].diff().dropna() > 0).sum())
+    high_rises = int((recent["High"].diff().dropna() > 0).sum())
+    low_rises = int((recent["Low"].diff().dropna() > 0).sum())
+    bullish = int((recent["Close"] >= recent["Open"]).sum())
+    ma_order = bool(ma4.iloc[-1] > ma8.iloc[-1] > ma12.iloc[-1])
+    ma4_up = bool(ma4.iloc[-1] > ma4.iloc[-2])
+    ma8_up = bool(ma8.iloc[-1] > ma8.iloc[-2])
+    ma12_up = bool(ma12.iloc[-1] > ma12.iloc[-2])
+    macd_up = bool(macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-1] > 0)
+    score = close_rises * 4 + high_rises * 3 + low_rises * 3
+    score += 20 if ma_order else 0
+    score += 8 if ma4_up else 0
+    score += 8 if ma8_up else 0
+    score += 4 if ma12_up else 0
+    score += bullish / 4 * 10
+    score += 15 if macd_up else 7 if macd.iloc[-1] > 0 else 0
+    if "Volume" in confirmed and len(confirmed) >= 8:
+        current_volume = confirmed["Volume"].tail(4).mean()
+        previous_volume = confirmed["Volume"].iloc[-8:-4].mean()
+        if pd.notna(current_volume) and pd.notna(previous_volume) and current_volume >= previous_volume:
+            score += 5
+
+    last = confirmed.iloc[-1]
+    body = abs(float(last["Close"] - last["Open"]))
+    upper_wick = float(last["High"] - max(last["Open"], last["Close"]))
+    large_upper_wick = bool(upper_wick > max(body * 2.0, float(last["Close"]) * 0.06))
+    if large_upper_wick:
+        score -= 10
+    score = float(np.clip(score, 0, 100))
+    qualified = bool(
+        score >= 70 and ma_order and ma8_up and ma12_up
+        and high_rises >= 2 and low_rises >= 2
+    )
+    if qualified and quarter_rsi >= 70:
+        reason = "四半期RSIは高いが、ローソク足・移動平均・MACDがそろって上昇"
+    elif qualified:
+        reason = "四半期足の高値・安値と移動平均がきれいに上昇"
+    elif large_upper_wick:
+        reason = "確定四半期足に大きな上ヒゲがあり監視のみ"
+    elif not ma_order:
+        reason = "四半期移動平均が上昇順ではない"
+    elif high_rises < 2 or low_rises < 2:
+        reason = "四半期足の高値・安値切り上げが不足"
+    else:
+        reason = "四半期足強度70点未満"
+    return {
+        "quarterly_score": score, "quarterly_qualified": qualified,
+        "quarterly_rsi": quarter_rsi, "quarterly_reason": reason,
+        "quarterly_ma4": float(ma4.iloc[-1]), "quarterly_ma8": float(ma8.iloc[-1]),
+        "quarterly_ma12": float(ma12.iloc[-1]), "quarterly_macd_up": macd_up,
+        "quarterly_large_upper_wick": large_upper_wick,
+        "quarterly_last_confirmed": confirmed.index[-1].date().isoformat(),
+        "quarterly_forming_close": float(forming["Close"]) if forming is not None else None,
+    }
+
+
 def calculate(code, name, hist):
     if hist is None or hist.empty:
         return None
@@ -155,16 +254,17 @@ def calculate(code, name, hist):
 
 
 def download_and_calculate(code, name=None, intraday=False):
-    period, interval = ("60d", "15m") if intraday else ("14mo", "1d")
+    period, interval = ("60d", "15m") if intraday else ("5y", "1d")
     hist = yf.download(f"{code}.T", period=period, interval=interval,
                        auto_adjust=False, progress=False, threads=False)
     result = calculate(code, name, hist)
     if result is None:
         return None
     daily = hist if not intraday else yf.download(
-        f"{code}.T", period="14mo", interval="1d", auto_adjust=False,
+        f"{code}.T", period="5y", interval="1d", auto_adjust=False,
         progress=False, threads=False)
     trend = daily_trend_context(daily)
+    quarterly = quarterly_strength_context(daily)
     if trend:
         result.update(trend)
         # RSI is only a watch trigger. A failed daily trend gate can never
@@ -173,4 +273,14 @@ def download_and_calculate(code, name=None, intraday=False):
             result["score"] = min(result["score"], 44.0)
         elif trend["tenkan_cross_up"] or trend["tenkan_above_kijun"]:
             result["score"] = min(100.0, result["score"] + 8.0)
+    if quarterly:
+        result.update(quarterly)
+        result["buy_eligible"] = bool(result.get("buy_eligible") and quarterly["quarterly_qualified"])
+        if not quarterly["quarterly_qualified"]:
+            result["score"] = min(result["score"], 44.0)
+    else:
+        result["quarterly_reason"] = "四半期足の履歴不足"
+        result["quarterly_qualified"] = False
+        result["buy_eligible"] = False
+        result["score"] = min(result["score"], 44.0)
     return result
