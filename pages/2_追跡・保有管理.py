@@ -371,6 +371,9 @@ if not open_df.empty:
             'ファンダメンタル点': analysis.get('fundamental_score'),
             '市場環境点': analysis.get('market_score'),
             'RSI14': analysis.get('rsi'), 'PER': analysis.get('per'),
+            '四半期足強度': analysis.get('quarterly_score'),
+            '四半期RSI14': analysis.get('quarterly_rsi'),
+            '四半期足判定': analysis.get('quarterly_reason'),
             '一目位置': analysis.get('cloud_position'), '現在の評価理由': analysis.get('trend_reason') or analysis.get('error'),
             '取引日': r['trade_date']
         })
@@ -383,6 +386,7 @@ if not open_df.empty:
                      "テクニカル点": st.column_config.NumberColumn(format="%.1f"),
                      "ファンダメンタル点": st.column_config.NumberColumn(format="%.1f"),
                      "市場環境点": st.column_config.NumberColumn(format="%.1f"),
+                     "四半期足強度": st.column_config.NumberColumn(format="%.1f / 100"),
                      "買値からの騰落率%": st.column_config.NumberColumn(format="%.2f%%"),
                  })
 
