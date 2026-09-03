@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from monitor_candidates import is_market_session
-from stocknote_technicals import calculate, daily_trend_context
+from stocknote_technicals import calculate, daily_trend_context, quarterly_strength_context
 
 
 class MonitorAndTechnicalTests(unittest.TestCase):
@@ -46,6 +46,32 @@ class MonitorAndTechnicalTests(unittest.TestCase):
         trend = daily_trend_context(frame)
         self.assertFalse(trend["buy_eligible"])
         self.assertTrue(trend["cloud_position"] == "雲の下" or not trend["ma75_up"])
+
+    def test_clean_quarterly_uptrend_qualifies_even_with_high_rsi(self):
+        index = pd.date_range("2021-01-01", "2026-06-30", freq="B")
+        base = np.linspace(100, 240, len(index))
+        close = pd.Series(base + np.sin(np.arange(len(index)) / 30) * 2, index=index)
+        frame = pd.DataFrame({
+            "Open": close * 0.98, "High": close * 1.02,
+            "Low": close * 0.97, "Close": close,
+            "Volume": np.linspace(1000, 2000, len(index)),
+        }, index=index)
+        result = quarterly_strength_context(frame, now="2026-08-15")
+        self.assertTrue(result["quarterly_qualified"])
+        self.assertGreaterEqual(result["quarterly_score"], 70)
+        self.assertGreaterEqual(result["quarterly_rsi"], 70)
+        self.assertIn("RSIは高い", result["quarterly_reason"])
+
+    def test_falling_quarterly_structure_is_rejected(self):
+        index = pd.date_range("2021-01-01", "2026-06-30", freq="B")
+        close = pd.Series(np.linspace(240, 100, len(index)), index=index)
+        frame = pd.DataFrame({
+            "Open": close * 1.02, "High": close * 1.03,
+            "Low": close * 0.98, "Close": close,
+        }, index=index)
+        result = quarterly_strength_context(frame, now="2026-08-15")
+        self.assertFalse(result["quarterly_qualified"])
+        self.assertLess(result["quarterly_score"], 70)
 
 
 if __name__ == "__main__":
