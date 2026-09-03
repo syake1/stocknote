@@ -230,6 +230,8 @@ def technical_scores(code, name, hist):
         "四半期足強度": quarterly["quarterly_score"] if quarterly else 0.0,
         "四半期足適合": quarterly_ok,
         "四半期足判定": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
+        "四半期足形状": quarterly["quarterly_pattern"] if quarterly else "履歴不足",
+        "高値圏持ち合い": quarterly["quarterly_high_level_consolidation"] if quarterly else False,
         "四半期RSI14": quarterly["quarterly_rsi"] if quarterly else np.nan,
         "四半期MACD上向き": quarterly["quarterly_macd_up"] if quarterly else False,
         "四半期大上ヒゲ": quarterly["quarterly_large_upper_wick"] if quarterly else False,
@@ -621,6 +623,8 @@ if st.session_state.scan_results is not None:
                     "quarterly_rsi": r["四半期RSI14"],
                     "quarterly_qualified": r["四半期足適合"],
                     "quarterly_reason": r["四半期足判定"],
+                    "quarterly_pattern": r["四半期足形状"],
+                    "quarterly_high_level_consolidation": r["高値圏持ち合い"],
                 })
                 if len(new_candidates) >= 10:
                     break
@@ -640,8 +644,8 @@ if st.session_state.scan_results is not None:
         with tab_buy:
             st.subheader("買い候補ランキング")
             st.caption("🔴 75点以上＝買い条件到達　🟡 65〜74.9点＝買い条件接近")
-            st.caption("四半期足強度70点以上＋日足が雲の上＋75日線/200日線が上向きの銘柄だけを表示します。四半期RSIが高くても、きれいな上昇中は減点しません。")
-            cols = ["コード", "銘柄名", "四半期足強度", "四半期RSI14", "買いスコア", "RSI14", "現在値", "日足BB上方乖離%", "一目位置",
+            st.caption("四半期足のきれいな上昇に加え、長期上昇後に高値圏で安値を崩さない持ち合いも対象です。大きな上ヒゲと日足BB過熱は除外します。")
+            cols = ["コード", "銘柄名", "四半期足形状", "四半期足強度", "四半期RSI14", "買いスコア", "RSI14", "現在値", "日足BB上方乖離%", "一目位置",
                     "転換線", "基準線", "転換線上抜け", "出来高倍率", "包み陽線"]
             if buy:
                 buy_table = pd.DataFrame(buy)[cols].head(50)

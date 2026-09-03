@@ -88,6 +88,8 @@ def technical_buy_score(code):
         "quarterly_score": quarterly["quarterly_score"] if quarterly else None,
         "quarterly_rsi": quarterly["quarterly_rsi"] if quarterly else None,
         "quarterly_reason": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
+        "quarterly_pattern": quarterly["quarterly_pattern"] if quarterly else "履歴不足",
+        "quarterly_high_level_consolidation": quarterly["quarterly_high_level_consolidation"] if quarterly else None,
         "quarterly_large_upper_wick": quarterly["quarterly_large_upper_wick"] if quarterly else None,
         "monthly_large_upper_wick": quarterly["monthly_large_upper_wick"] if quarterly else None,
         "daily_bb_overextended": daily_bb_overextended,

@@ -123,6 +123,7 @@ def _snapshot(candidate):
         "ma75_up", "ma200_up", "buy_eligible", "trend_reason",
         "quarterly_score", "quarterly_rsi", "quarterly_qualified",
         "quarterly_reason", "quarterly_last_confirmed",
+        "quarterly_pattern", "quarterly_high_level_consolidation",
         "quarterly_large_upper_wick", "monthly_large_upper_wick",
         "multi_timeframe_wick_risk", "daily_bb_overextended",
     )
@@ -179,6 +180,7 @@ def _metrics(row):
                 "tenkan_cross_up", "chikou_confirmed", "ma75_up",
                 "ma200_up", "buy_eligible", "quarterly_qualified",
                 "quarterly_reason", "quarterly_last_confirmed",
+                "quarterly_pattern", "quarterly_high_level_consolidation",
                 "quarterly_large_upper_wick", "monthly_large_upper_wick",
                 "multi_timeframe_wick_risk", "daily_bb_overextended"):
         if key in row:

@@ -150,6 +150,14 @@ def quarterly_strength_context(hist, now=None):
     ma8_up = bool(ma8.iloc[-1] > ma8.iloc[-2])
     ma12_up = bool(ma12.iloc[-1] > ma12.iloc[-2])
     macd_up = bool(macd.iloc[-1] > signal.iloc[-1] and macd.iloc[-1] > 0)
+    recent_closes = recent["Close"]
+    close_range_pct = float(recent_closes.max() / recent_closes.min() - 1)
+    eight_quarter_high = float(confirmed["High"].tail(8).max())
+    near_long_term_high = bool(float(close.iloc[-1]) >= eight_quarter_high * 0.88)
+    recent_floor_holds = bool(
+        float(recent["Low"].tail(2).min())
+        >= float(recent["Low"].head(2).min()) * 0.92
+    )
     score = close_rises * 4 + high_rises * 3 + low_rises * 3
     score += 20 if ma_order else 0
     score += 8 if ma4_up else 0
@@ -189,12 +197,26 @@ def quarterly_strength_context(hist, now=None):
     if multi_timeframe_wick_risk:
         score -= 15
     score = float(np.clip(score, 0, 100))
-    qualified = bool(
+    clean_rising_trend = bool(
         score >= 70 and ma_order and ma8_up and ma12_up
         and high_rises >= 2 and low_rises >= 2
         and not multi_timeframe_wick_risk
     )
-    if qualified and quarter_rsi >= 70:
+    high_level_consolidation = bool(
+        ma8.iloc[-1] > ma12.iloc[-1]
+        and ma8_up and ma12_up
+        and macd.iloc[-1] > 0
+        and float(close.iloc[-1]) >= float(ma12.iloc[-1])
+        and close_range_pct <= 0.15
+        and near_long_term_high
+        and recent_floor_holds
+        and not multi_timeframe_wick_risk
+    )
+    qualified = clean_rising_trend or high_level_consolidation
+    pattern = "高値圏持ち合い" if high_level_consolidation and not clean_rising_trend else "上昇トレンド"
+    if high_level_consolidation and not clean_rising_trend:
+        reason = "長期上昇後の高値圏持ち合い（安値を崩さず上放れ待ち）"
+    elif qualified and quarter_rsi >= 70:
         reason = "四半期RSIは高いが、ローソク足・移動平均・MACDがそろって上昇"
     elif qualified:
         reason = "四半期足の高値・安値と移動平均がきれいに上昇"
@@ -213,6 +235,9 @@ def quarterly_strength_context(hist, now=None):
     return {
         "quarterly_score": score, "quarterly_qualified": qualified,
         "quarterly_rsi": quarter_rsi, "quarterly_reason": reason,
+        "quarterly_pattern": pattern if qualified else "対象外",
+        "quarterly_high_level_consolidation": high_level_consolidation,
+        "quarterly_close_range_pct": close_range_pct * 100,
         "quarterly_ma4": float(ma4.iloc[-1]), "quarterly_ma8": float(ma8.iloc[-1]),
         "quarterly_ma12": float(ma12.iloc[-1]), "quarterly_macd_up": macd_up,
         "quarterly_large_upper_wick": quarterly_large_upper_wick,
