@@ -121,6 +121,8 @@ def _snapshot(candidate):
         "cloud_top", "cloud_bottom", "cloud_position", "tenkan", "kijun",
         "tenkan_above_kijun", "tenkan_cross_up", "chikou_confirmed",
         "ma75_up", "ma200_up", "buy_eligible", "trend_reason",
+        "quarterly_score", "quarterly_rsi", "quarterly_qualified",
+        "quarterly_reason", "quarterly_last_confirmed",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -173,10 +175,12 @@ def _metrics(row):
             out[target] = _as_float(row[source])
     for key in ("cloud_position", "trend_reason", "tenkan_above_kijun",
                 "tenkan_cross_up", "chikou_confirmed", "ma75_up",
-                "ma200_up", "buy_eligible"):
+                "ma200_up", "buy_eligible", "quarterly_qualified",
+                "quarterly_reason", "quarterly_last_confirmed"):
         if key in row:
             out[key] = row[key]
-    for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun"):
+    for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",
+                "quarterly_score", "quarterly_rsi"):
         if key in row:
             out[key] = _as_float(row[key])
     return out
