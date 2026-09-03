@@ -122,6 +122,7 @@ def quarterly_strength_context(hist, now=None):
     if "Volume" in frame:
         aggregation["Volume"] = "sum"
     quarterly = frame.resample("QE-DEC").agg(aggregation).dropna(subset=list(required))
+    monthly = frame.resample("ME").agg(aggregation).dropna(subset=list(required))
     if quarterly.empty:
         return None
     reference = pd.Timestamp(now) if now is not None else pd.Timestamp.now()
@@ -162,23 +163,47 @@ def quarterly_strength_context(hist, now=None):
         if pd.notna(current_volume) and pd.notna(previous_volume) and current_volume >= previous_volume:
             score += 5
 
-    last = confirmed.iloc[-1]
-    body = abs(float(last["Close"] - last["Open"]))
-    upper_wick = float(last["High"] - max(last["Open"], last["Close"]))
-    large_upper_wick = bool(upper_wick > max(body * 2.0, float(last["Close"]) * 0.06))
-    if large_upper_wick:
-        score -= 10
+    def has_large_upper_wick(candle):
+        body = abs(float(candle["Close"] - candle["Open"]))
+        upper_wick = float(candle["High"] - max(candle["Open"], candle["Close"]))
+        full_range = float(candle["High"] - candle["Low"])
+        return bool(
+            full_range > 0 and upper_wick / full_range >= 0.35
+            and upper_wick > max(body * 1.2, float(candle["Close"]) * 0.025)
+        )
+
+    quarterly_large_upper_wick = has_large_upper_wick(confirmed.iloc[-1])
+    if forming is not None:
+        quarterly_large_upper_wick = quarterly_large_upper_wick or has_large_upper_wick(forming)
+    monthly_confirmed = monthly
+    monthly_forming = None
+    if not monthly.empty and monthly.index[-1].to_period("M") == reference.to_period("M"):
+        monthly_forming = monthly.iloc[-1]
+        monthly_confirmed = monthly.iloc[:-1]
+    monthly_large_upper_wick = bool(
+        not monthly_confirmed.empty and has_large_upper_wick(monthly_confirmed.iloc[-1])
+    )
+    if monthly_forming is not None:
+        monthly_large_upper_wick = monthly_large_upper_wick or has_large_upper_wick(monthly_forming)
+    multi_timeframe_wick_risk = quarterly_large_upper_wick or monthly_large_upper_wick
+    if multi_timeframe_wick_risk:
+        score -= 15
     score = float(np.clip(score, 0, 100))
     qualified = bool(
         score >= 70 and ma_order and ma8_up and ma12_up
         and high_rises >= 2 and low_rises >= 2
+        and not multi_timeframe_wick_risk
     )
     if qualified and quarter_rsi >= 70:
         reason = "四半期RSIは高いが、ローソク足・移動平均・MACDがそろって上昇"
     elif qualified:
         reason = "四半期足の高値・安値と移動平均がきれいに上昇"
-    elif large_upper_wick:
-        reason = "確定四半期足に大きな上ヒゲがあり監視のみ"
+    elif quarterly_large_upper_wick and monthly_large_upper_wick:
+        reason = "四半期足と月足に大きな上ヒゲがあり高値警戒・押し目待ち"
+    elif quarterly_large_upper_wick:
+        reason = "四半期足に大きな上ヒゲがあり高値警戒・押し目待ち"
+    elif monthly_large_upper_wick:
+        reason = "月足に大きな上ヒゲがあり高値警戒・押し目待ち"
     elif not ma_order:
         reason = "四半期移動平均が上昇順ではない"
     elif high_rises < 2 or low_rises < 2:
@@ -190,7 +215,9 @@ def quarterly_strength_context(hist, now=None):
         "quarterly_rsi": quarter_rsi, "quarterly_reason": reason,
         "quarterly_ma4": float(ma4.iloc[-1]), "quarterly_ma8": float(ma8.iloc[-1]),
         "quarterly_ma12": float(ma12.iloc[-1]), "quarterly_macd_up": macd_up,
-        "quarterly_large_upper_wick": large_upper_wick,
+        "quarterly_large_upper_wick": quarterly_large_upper_wick,
+        "monthly_large_upper_wick": monthly_large_upper_wick,
+        "multi_timeframe_wick_risk": multi_timeframe_wick_risk,
         "quarterly_last_confirmed": confirmed.index[-1].date().isoformat(),
         "quarterly_forming_close": float(forming["Close"]) if forming is not None else None,
     }
@@ -279,8 +306,12 @@ def download_and_calculate(code, name=None, intraday=False):
             result["score"] = min(100.0, result["score"] + 8.0)
     if quarterly:
         result.update(quarterly)
-        result["buy_eligible"] = bool(result.get("buy_eligible") and quarterly["quarterly_qualified"])
-        if not quarterly["quarterly_qualified"]:
+        result["daily_bb_overextended"] = bool((result.get("bb_position") or 0) >= 2.3)
+        result["buy_eligible"] = bool(
+            result.get("buy_eligible") and quarterly["quarterly_qualified"]
+            and not result["daily_bb_overextended"]
+        )
+        if not result["buy_eligible"]:
             result["score"] = min(result["score"], 44.0)
     else:
         result["quarterly_reason"] = "四半期足の履歴不足"
