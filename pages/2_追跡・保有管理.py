@@ -374,6 +374,9 @@ if not open_df.empty:
             '四半期足強度': analysis.get('quarterly_score'),
             '四半期RSI14': analysis.get('quarterly_rsi'),
             '四半期足判定': analysis.get('quarterly_reason'),
+            '四半期大上ヒゲ': analysis.get('quarterly_large_upper_wick'),
+            '月足大上ヒゲ': analysis.get('monthly_large_upper_wick'),
+            '日足BB上抜け過熱': analysis.get('daily_bb_overextended'),
             '一目位置': analysis.get('cloud_position'), '現在の評価理由': analysis.get('trend_reason') or analysis.get('error'),
             '取引日': r['trade_date']
         })
