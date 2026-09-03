@@ -46,7 +46,7 @@ def technical_buy_score(code):
     rsi = rsi14(close)
     ma25, ma75, ma200 = close.rolling(25).mean(), close.rolling(75).mean(), close.rolling(200).mean()
     std25 = close.rolling(25).std()
-    lower = ma25 - 2 * std25
+    upper, lower = ma25 + 2 * std25, ma25 - 2 * std25
     macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
     trend = daily_trend_context(hist)
@@ -55,6 +55,8 @@ def technical_buy_score(code):
     m25, m75 = float(ma25.iloc[-1]), float(ma75.iloc[-1])
     m200 = float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else np.nan
     blo = float(lower.iloc[-1])
+    bup = float(upper.iloc[-1])
+    daily_bb_overextended = bool(px > bup * 1.03)
     vr = 1.0
     if "Volume" in hist:
         volume = pd.to_numeric(hist["Volume"], errors="coerce").dropna()
@@ -76,7 +78,8 @@ def technical_buy_score(code):
         + (8.0 if trend and trend["tenkan_cross_up"] else 5.0 if trend and trend["tenkan_above_kijun"] else 0.0)
     )
     score = float(np.clip(score, 0, 100))
-    if not trend or not trend["buy_eligible"] or not quarterly or not quarterly["quarterly_qualified"]:
+    if (not trend or not trend["buy_eligible"] or not quarterly
+            or not quarterly["quarterly_qualified"] or daily_bb_overextended):
         score = min(score, 44.0)
     return {
         "current_price": px, "technical_score": score, "rsi": rv,
@@ -85,6 +88,9 @@ def technical_buy_score(code):
         "quarterly_score": quarterly["quarterly_score"] if quarterly else None,
         "quarterly_rsi": quarterly["quarterly_rsi"] if quarterly else None,
         "quarterly_reason": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
+        "quarterly_large_upper_wick": quarterly["quarterly_large_upper_wick"] if quarterly else None,
+        "monthly_large_upper_wick": quarterly["monthly_large_upper_wick"] if quarterly else None,
+        "daily_bb_overextended": daily_bb_overextended,
     }
 
 
