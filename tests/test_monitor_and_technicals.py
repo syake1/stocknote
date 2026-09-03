@@ -73,6 +73,36 @@ class MonitorAndTechnicalTests(unittest.TestCase):
         self.assertFalse(result["quarterly_qualified"])
         self.assertLess(result["quarterly_score"], 70)
 
+    def test_high_level_quarterly_consolidation_qualifies(self):
+        index = pd.date_range("2021-01-01", "2026-06-30", freq="B")
+        rise_end = int(len(index) * 0.72)
+        rising = np.linspace(100, 205, rise_end)
+        sideways = 202 + np.sin(np.arange(len(index) - rise_end) / 25) * 3
+        close = pd.Series(np.concatenate([rising, sideways]), index=index)
+        frame = pd.DataFrame({
+            "Open": close * 0.995, "High": close * 1.012,
+            "Low": close * 0.988, "Close": close,
+            "Volume": np.linspace(1000, 1800, len(index)),
+        }, index=index)
+        result = quarterly_strength_context(frame, now="2026-08-15")
+        self.assertTrue(result["quarterly_qualified"])
+        self.assertTrue(result["quarterly_high_level_consolidation"])
+        self.assertEqual(result["quarterly_pattern"], "高値圏持ち合い")
+        self.assertIn("上放れ待ち", result["quarterly_reason"])
+
+    def test_low_level_sideways_stock_is_rejected(self):
+        index = pd.date_range("2021-01-01", "2026-06-30", freq="B")
+        falling = np.linspace(230, 120, int(len(index) * 0.72))
+        sideways = 122 + np.sin(np.arange(len(index) - len(falling)) / 25) * 2
+        close = pd.Series(np.concatenate([falling, sideways]), index=index)
+        frame = pd.DataFrame({
+            "Open": close * 1.002, "High": close * 1.012,
+            "Low": close * 0.988, "Close": close,
+        }, index=index)
+        result = quarterly_strength_context(frame, now="2026-08-15")
+        self.assertFalse(result["quarterly_qualified"])
+        self.assertFalse(result["quarterly_high_level_consolidation"])
+
     def test_strong_trend_with_large_quarterly_wick_is_watch_only(self):
         index = pd.date_range("2021-01-01", "2026-06-30", freq="B")
         close = pd.Series(np.linspace(100, 240, len(index)), index=index)
