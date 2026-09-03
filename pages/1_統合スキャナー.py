@@ -597,6 +597,11 @@ if st.session_state.scan_results is not None:
         universe_by_code = {str(r.get("コード", "")).strip(): r.to_dict() for _, r in u.iterrows()}
         # A known forecast PER above 25 is watch-only for the user's value-oriented buy rules.
         for r in ok:
+            # session_state may still contain scan rows created before the
+            # quarterly pattern fields were introduced.  Supply compatible
+            # defaults so a hot Streamlit redeploy never crashes mid-scan.
+            r.setdefault("四半期足形状", "上昇トレンド" if r.get("四半期足適合") else "対象外")
+            r.setdefault("高値圏持ち合い", False)
             source = universe_by_code.get(str(r["コード"]), {})
             forecast_per = number(source.get("PER(株価収益率)(予)(倍)"))
             r["予想PER"] = forecast_per
@@ -623,8 +628,8 @@ if st.session_state.scan_results is not None:
                     "quarterly_rsi": r["四半期RSI14"],
                     "quarterly_qualified": r["四半期足適合"],
                     "quarterly_reason": r["四半期足判定"],
-                    "quarterly_pattern": r["四半期足形状"],
-                    "quarterly_high_level_consolidation": r["高値圏持ち合い"],
+                    "quarterly_pattern": r.get("四半期足形状", "対象外"),
+                    "quarterly_high_level_consolidation": r.get("高値圏持ち合い", False),
                 })
                 if len(new_candidates) >= 10:
                     break
