@@ -14,7 +14,7 @@ from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
 from stocknote_tracking import load_active, merge_new_candidates
-from stocknote_technicals import daily_trend_context
+from stocknote_technicals import daily_trend_context, quarterly_strength_context
 from stocknote_short import assess_short, number
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
@@ -108,7 +108,10 @@ def rsi14(close):
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
-    return (100 - 100 / (1 + rs)).fillna(50)
+    value = 100 - 100 / (1 + rs)
+    value = value.mask((loss == 0) & (gain > 0), 100.0)
+    value = value.mask((loss == 0) & (gain == 0), 50.0)
+    return value.fillna(50)
 
 
 def batch_frame(data, ticker):
@@ -129,7 +132,7 @@ def batch_frame(data, ticker):
     return pd.DataFrame()
 
 
-def one_download(code, period="14mo", interval="1d"):
+def one_download(code, period="5y", interval="1d"):
     try:
         h = yf.download(f"{code}.T", period=period, interval=interval,
                         auto_adjust=False, progress=False, threads=False)
@@ -158,6 +161,7 @@ def technical_scores(code, name, hist):
     macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
     trend = daily_trend_context(hist)
+    quarterly = quarterly_strength_context(hist)
 
     px = float(close.iloc[-1])
     rv = float(rsi.iloc[-1])
@@ -198,7 +202,8 @@ def technical_scores(code, name, hist):
     buy_candle = 12.0 if reversal else 0.0
     ichimoku = 8.0 if trend and trend["tenkan_cross_up"] else 5.0 if trend and trend["tenkan_above_kijun"] else 0.0
     buy_score = float(np.clip(buy_rsi + buy_bb + buy_trend + buy_macd + buy_volume + buy_candle + ichimoku, 0, 100))
-    if not trend or not trend["buy_eligible"]:
+    quarterly_ok = bool(quarterly and quarterly["quarterly_qualified"])
+    if not trend or not trend["buy_eligible"] or not quarterly_ok:
         buy_score = min(buy_score, 44.0)
 
     short_rsi = float(np.clip((rv - 55) / 25 * 35, 0, 35))
@@ -220,7 +225,14 @@ def technical_scores(code, name, hist):
         "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
         "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear, "包み陰線": bearish_engulfing,
         "買いスコア": buy_score, "空売りスコア": short_score,
-        "買い対象": bool(trend and trend["buy_eligible"]),
+        "買い対象": bool(trend and trend["buy_eligible"] and quarterly_ok),
+        "四半期足強度": quarterly["quarterly_score"] if quarterly else 0.0,
+        "四半期足適合": quarterly_ok,
+        "四半期足判定": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
+        "四半期RSI14": quarterly["quarterly_rsi"] if quarterly else np.nan,
+        "四半期MACD上向き": quarterly["quarterly_macd_up"] if quarterly else False,
+        "四半期大上ヒゲ": quarterly["quarterly_large_upper_wick"] if quarterly else False,
+        "確定四半期": quarterly["quarterly_last_confirmed"] if quarterly else None,
         "一目位置": trend["cloud_position"] if trend else "データ不足",
         "転換線": trend["tenkan"] if trend else np.nan,
         "基準線": trend["kijun"] if trend else np.nan,
@@ -245,7 +257,7 @@ def scan_items(items):
         batch = items[start:start + 20]
         tickers = [f"{c}.T" for c, _ in batch]
         try:
-            data = yf.download(tickers, period="14mo", group_by="ticker",
+            data = yf.download(tickers, period="5y", group_by="ticker",
                                auto_adjust=False, progress=False, threads=True)
         except Exception:
             data = pd.DataFrame()
@@ -601,6 +613,10 @@ if st.session_state.scan_results is not None:
                     "cloud_position": r["一目位置"], "tenkan": r["転換線"],
                     "kijun": r["基準線"], "tenkan_cross_up": r["転換線上抜け"],
                     "buy_eligible": r["買い対象"], "trend_reason": r["トレンド判定"],
+                    "quarterly_score": r["四半期足強度"],
+                    "quarterly_rsi": r["四半期RSI14"],
+                    "quarterly_qualified": r["四半期足適合"],
+                    "quarterly_reason": r["四半期足判定"],
                 })
                 if len(new_candidates) >= 10:
                     break
@@ -620,8 +636,8 @@ if st.session_state.scan_results is not None:
         with tab_buy:
             st.subheader("買い候補ランキング")
             st.caption("🔴 75点以上＝買い条件到達　🟡 65〜74.9点＝買い条件接近")
-            st.caption("雲の上・75日線/200日線が下向きでない・株価が200日線以上の銘柄だけを表示します。RSIは監視開始の目安です。")
-            cols = ["コード", "銘柄名", "買いスコア", "RSI14", "現在値", "一目位置",
+            st.caption("四半期足強度70点以上＋日足が雲の上＋75日線/200日線が上向きの銘柄だけを表示します。四半期RSIが高くても、きれいな上昇中は減点しません。")
+            cols = ["コード", "銘柄名", "四半期足強度", "四半期RSI14", "買いスコア", "RSI14", "現在値", "一目位置",
                     "転換線", "基準線", "転換線上抜け", "出来高倍率", "包み陽線"]
             if buy:
                 buy_table = pd.DataFrame(buy)[cols].head(50)
@@ -638,7 +654,7 @@ if st.session_state.scan_results is not None:
                 st.info("現在、上昇トレンド押し目の必須条件を満たす買い候補はありません。")
             with st.expander(f"監視のみ・除外銘柄（{len(watch_only)}件）"):
                 if watch_only:
-                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "RSI14", "一目位置", "トレンド判定"]].head(100),
+                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "四半期足強度", "四半期RSI14", "四半期足判定", "RSI14", "一目位置", "トレンド判定"]].head(100),
                                  hide_index=True, use_container_width=True)
 
         with tab_short:
