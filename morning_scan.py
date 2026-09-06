@@ -68,9 +68,12 @@ def score_one(code, name):
     macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
     signal = macd.ewm(span=9, adjust=False).mean()
     px, rv = float(close.iloc[-1]), float(rsi.iloc[-1])
+    prev_px, prev_rsi = float(close.iloc[-2]), float(rsi.iloc[-2])
     m25, m75 = float(ma25.iloc[-1]), float(ma75.iloc[-1])
     m200 = float(ma200.iloc[-1])
     blo = float(lower.iloc[-1])
+    std_now = float(std25.iloc[-1])
+    bb_position = (px - m25) / max(std_now, 1e-9)
     md, sg = float(macd.iloc[-1]), float(signal.iloc[-1])
     vr = 1.0
     if "Volume" in h:
@@ -78,12 +81,30 @@ def score_one(code, name):
         if len(v) >= 21 and float(v.iloc[-21:-1].mean()) > 0:
             vr = float(v.iloc[-1] / v.iloc[-21:-1].mean())
     reversal = False
+    lower_wick_reversal = False
     if "Open" in h and len(h) >= 2:
         o = pd.to_numeric(h["Open"], errors="coerce")
+        low = pd.to_numeric(h["Low"], errors="coerce") if "Low" in h else None
         if pd.notna(o.iloc[-1]) and pd.notna(o.iloc[-2]):
             reversal = bool(close.iloc[-2] < o.iloc[-2] and close.iloc[-1] > o.iloc[-1]
                             and close.iloc[-1] >= o.iloc[-2] and o.iloc[-1] <= close.iloc[-2])
-    buy_rsi = float(np.clip((55-rv)/30*35, 0, 35))
+        if low is not None and pd.notna(low.iloc[-1]) and pd.notna(o.iloc[-1]):
+            body_bottom = min(float(o.iloc[-1]), px)
+            body = abs(px - float(o.iloc[-1]))
+            lower_wick = body_bottom - float(low.iloc[-1])
+            lower_wick_reversal = bool(px >= float(o.iloc[-1]) and lower_wick >= max(body, px * 0.005))
+
+    # 長期上昇基調の中で、日足が実際に押して反転し始めた銘柄だけを通す。
+    # 強いだけの高値圏銘柄が候補になることを防ぐ。
+    pullback_zone = bool(28.0 <= rv <= 45.0 and px <= m25 and bb_position <= -0.5)
+    rebound_confirmed = bool(
+        reversal or lower_wick_reversal
+        or (px > prev_px and rv > prev_rsi)
+    )
+    if not pullback_zone or not rebound_confirmed:
+        return None
+
+    buy_rsi = float(np.clip((45-rv)/17*35, 0, 35))
     buy_bb = 25.0 if px <= blo*1.02 else float(np.clip((m25-px)/max(m25-blo,1e-9)*20,0,20))
     buy_trend = (12.0 if m25 >= m75 else 4.0) + (5.0 if px >= m200 else 0.0)
     buy_macd = 8.0 if md >= sg else 2.0
@@ -91,7 +112,10 @@ def score_one(code, name):
     buy_candle = 12.0 if reversal else 0.0
     ichimoku = 8.0 if trend["tenkan_cross_up"] else 5.0 if trend["tenkan_above_kijun"] else 0.0
     score = float(np.clip(buy_rsi+buy_bb+buy_trend+buy_macd+buy_volume+buy_candle+ichimoku,0,100))
-    return {"code":code,"name":name or code,"price":px,"rsi":rv,"vr":vr,"score":score,"reversal":reversal,
+    return {"code":code,"name":name or code,"price":px,"rsi":rv,"vr":vr,"score":score,
+            "reversal":reversal,"lower_wick_reversal":lower_wick_reversal,
+            "pullback_zone":pullback_zone,"rebound_confirmed":rebound_confirmed,
+            "bb_position":bb_position,
             "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up", **trend}
 
 
@@ -100,9 +124,14 @@ def post_discord(rows, total):
     if rows:
         lines = [f"📊 **Stocknote 朝の買い候補**  {now}", f"母集団 {total}銘柄 / 上位 {len(rows)}銘柄"]
         for i, r in enumerate(rows, 1):
-            candle = " / 包み陽線" if r["reversal"] else ""
+            if r["reversal"]:
+                candle = " / 包み陽線"
+            elif r.get("lower_wick_reversal"):
+                candle = " / 下ヒゲ陽線"
+            else:
+                candle = " / 終値・RSI反転"
             ichi = " / 転換線↑基準線" if r.get("tenkan_above_kijun") else " / 転換線≤基準線"
-            lines.append(f"{i}. **{r['code']} {r['name']}**  score {r['score']:.1f} / RSI {r['rsi']:.1f} / ¥{r['price']:,.0f} / {r.get('cloud_position','—')}{ichi} / 出来高 {r['vr']:.2f}倍{candle}")
+            lines.append(f"{i}. **{r['code']} {r['name']}**  score {r['score']:.1f} / RSI {r['rsi']:.1f} / BB {r['bb_position']:.2f}σ / ¥{r['price']:,.0f} / {r.get('cloud_position','—')}{ichi} / 出来高 {r['vr']:.2f}倍{candle}")
     else:
         lines = [f"📊 **Stocknote 朝スキャン**  {now}", f"母集団 {total}銘柄を確認しましたが、分析可能な買い候補はありませんでした。"]
     text = "\n".join(lines)
