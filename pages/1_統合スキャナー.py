@@ -43,7 +43,10 @@ if active_candidates:
             key="active_candidate_detail",
         )
         selected_active = active_by_code[selected_active_code]
-        with st.container(border=True):
+        with st.expander(
+            f"📊 {selected_active_code} {selected_active.get('name') or ''} の詳細",
+            expanded=True,
+        ):
             st.markdown(
                 f"### {selected_active_code} "
                 f"{selected_active.get('name') or ''}"
@@ -62,10 +65,9 @@ if active_candidates:
                 f"日足判定：{selected_active.get('trend_reason') or '—'}　／　"
                 f"四半期足判定：{selected_active.get('quarterly_reason') or '—'}"
             )
-            st.link_button(
-                "Yahoo!ファイナンスでチャートを開く",
-                f"https://finance.yahoo.co.jp/quote/{selected_active_code}.T",
-                use_container_width=True,
+            st.markdown(
+                f"[Yahoo!ファイナンスでチャートを開く]"
+                f"(https://finance.yahoo.co.jp/quote/{selected_active_code}.T)"
             )
 else:
     st.info("監視候補を作成中です。保存済みSBIデータがあれば、この画面で自動的に再分析します。")
