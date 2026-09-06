@@ -31,6 +31,42 @@ if active_candidates:
         "最終更新日時": r.get("updated_at"),
     } for r in active_candidates]
     st.dataframe(pd.DataFrame(active_rows), hide_index=True, use_container_width=True)
+
+    # st.dataframeの行はスマホでは押しても詳細表示にならないため、
+    # 明示的な選択欄を用意する。
+    active_by_code = {str(r.get("code")): r for r in active_candidates if r.get("code")}
+    if active_by_code:
+        selected_active_code = st.selectbox(
+            "👇 監視中の銘柄を選んで詳細を見る",
+            list(active_by_code),
+            format_func=lambda code: f"{code} {active_by_code[code].get('name') or ''}",
+            key="active_candidate_detail",
+        )
+        selected_active = active_by_code[selected_active_code]
+        with st.container(border=True):
+            st.markdown(
+                f"### {selected_active_code} "
+                f"{selected_active.get('name') or ''}"
+            )
+            a1, a2, a3, a4 = st.columns(4)
+            price = selected_active.get("current_price")
+            score = selected_active.get("score")
+            rsi = selected_active.get("rsi")
+            bb_position = selected_active.get("bb_position")
+            a1.metric("現在値", f"¥{price:,.0f}" if isinstance(price, (int, float)) else "—")
+            a2.metric("逆張りスコア", f"{score:.1f}/100" if isinstance(score, (int, float)) else "—")
+            a3.metric("RSI14", f"{rsi:.1f}" if isinstance(rsi, (int, float)) else "—")
+            a4.metric("BB位置", f"{bb_position:.2f}σ" if isinstance(bb_position, (int, float)) else "—")
+            st.write(f"状態：**{selected_active.get('status') or '—'}**")
+            st.caption(
+                f"日足判定：{selected_active.get('trend_reason') or '—'}　／　"
+                f"四半期足判定：{selected_active.get('quarterly_reason') or '—'}"
+            )
+            st.link_button(
+                "Yahoo!ファイナンスでチャートを開く",
+                f"https://finance.yahoo.co.jp/quote/{selected_active_code}.T",
+                use_container_width=True,
+            )
 else:
     st.info("監視候補を作成中です。保存済みSBIデータがあれば、この画面で自動的に再分析します。")
 
