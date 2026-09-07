@@ -14,6 +14,7 @@ import requests
 import yfinance as yf
 
 from monitor_candidates import notify
+from stocknote_fundamentals import get_fundamentals
 from stocknote_tracking import filter_new_notifications, merge_new_candidates
 from stocknote_technicals import daily_trend_context
 
@@ -22,6 +23,8 @@ WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 SEND_MEETING = os.getenv("STOCKNOTE_SEND_MEETING", "0") == "1"
 TOP_N = int(os.getenv("STOCKNOTE_TOP_N", "10"))
 MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "0"))
+MIN_FUNDAMENTAL_SCORE = float(os.getenv("STOCKNOTE_MIN_FUNDAMENTAL_SCORE", "40"))
+FUNDAMENTAL_POOL = int(os.getenv("STOCKNOTE_FUNDAMENTAL_POOL", "20"))
 
 
 def normalize_code(value):
@@ -37,6 +40,31 @@ def rsi14(close):
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     return (100 - 100 / (1 + rs)).fillna(50)
+
+
+def touched_ma75_recently(low, ma75, lookback=3):
+    """Return True when price reached or broke the 75-day line recently."""
+    aligned = pd.concat([low.rename("low"), ma75.rename("ma75")], axis=1).dropna().tail(lookback)
+    return bool(not aligned.empty and (aligned["low"] <= aligned["ma75"]).any())
+
+
+def add_fundamental_judgement(row, fundamentals):
+    """Keep contrarian timing primary, then use fundamentals as quality control."""
+    result = dict(row)
+    fundamental_score = float(fundamentals.get("score", 50.0))
+    available = int(fundamentals.get("available", 0) or 0)
+    if available and fundamental_score < MIN_FUNDAMENTAL_SCORE:
+        return None
+    technical_score = float(result["score"])
+    result.update({
+        "technical_score": technical_score,
+        "fundamental_score": fundamental_score,
+        "fundamental_comment": fundamentals.get("comment", "ファンダメンタル取得不可"),
+        "fundamental_available": available,
+        # The original Bollinger-band contrarian signal remains the main axis.
+        "score": technical_score * 0.8 + fundamental_score * 0.2,
+    })
+    return result
 
 
 def score_one(code, name):
@@ -82,9 +110,9 @@ def score_one(code, name):
             vr = float(v.iloc[-1] / v.iloc[-21:-1].mean())
     reversal = False
     lower_wick_reversal = False
+    low = pd.to_numeric(h["Low"], errors="coerce") if "Low" in h else None
     if "Open" in h and len(h) >= 2:
         o = pd.to_numeric(h["Open"], errors="coerce")
-        low = pd.to_numeric(h["Low"], errors="coerce") if "Low" in h else None
         if pd.notna(o.iloc[-1]) and pd.notna(o.iloc[-2]):
             reversal = bool(close.iloc[-2] < o.iloc[-2] and close.iloc[-1] > o.iloc[-1]
                             and close.iloc[-1] >= o.iloc[-2] and o.iloc[-1] <= close.iloc[-2])
@@ -94,9 +122,17 @@ def score_one(code, name):
             lower_wick = body_bottom - float(low.iloc[-1])
             lower_wick_reversal = bool(px >= float(o.iloc[-1]) and lower_wick >= max(body, px * 0.005))
 
-    # 長期上昇基調の中で、日足が実際に押して反転し始めた銘柄だけを通す。
-    # 強いだけの高値圏銘柄が候補になることを防ぐ。
-    pullback_zone = bool(28.0 <= rv <= 45.0 and px <= m25 and bb_position <= -0.5)
+    # ボリンジャーバンド逆張りを主軸にする。75日線まで下げていない
+    # 高値圏銘柄は、RSIや25日線だけが条件を満たしても候補にしない。
+    ma75_touched = bool(low is not None and touched_ma75_recently(low, ma75, lookback=3))
+    ma75_distance_pct = (px / m75 - 1.0) * 100.0
+    pullback_zone = bool(
+        28.0 <= rv <= 45.0
+        and px <= m25
+        and bb_position <= -0.5
+        and ma75_touched
+        and px <= m75 * 1.05
+    )
     rebound_confirmed = bool(
         reversal or lower_wick_reversal
         or (px > prev_px and rv > prev_rsi)
@@ -115,7 +151,8 @@ def score_one(code, name):
     return {"code":code,"name":name or code,"price":px,"rsi":rv,"vr":vr,"score":score,
             "reversal":reversal,"lower_wick_reversal":lower_wick_reversal,
             "pullback_zone":pullback_zone,"rebound_confirmed":rebound_confirmed,
-            "bb_position":bb_position,
+            "bb_position":bb_position,"ma75_touched":ma75_touched,
+            "ma75_distance_pct":ma75_distance_pct,
             "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up", **trend}
 
 
@@ -131,7 +168,16 @@ def post_discord(rows, total):
             else:
                 candle = " / 終値・RSI反転"
             ichi = " / 転換線↑基準線" if r.get("tenkan_above_kijun") else " / 転換線≤基準線"
-            lines.append(f"{i}. **{r['code']} {r['name']}**  score {r['score']:.1f} / RSI {r['rsi']:.1f} / BB {r['bb_position']:.2f}σ / ¥{r['price']:,.0f} / {r.get('cloud_position','—')}{ichi} / 出来高 {r['vr']:.2f}倍{candle}")
+            lines.append(
+                f"{i}. **{r['code']} {r['name']}**  総合 {r['score']:.1f}"
+                f" / 逆張り {r.get('technical_score', r['score']):.1f}"
+                f" / ファンダ {r.get('fundamental_score', 50):.1f}"
+                f" / RSI {r['rsi']:.1f} / BB {r['bb_position']:.2f}σ"
+                f" / 75日線乖離 {r.get('ma75_distance_pct', 0):+.1f}%"
+                f" / ¥{r['price']:,.0f} / {r.get('cloud_position','—')}{ichi}"
+                f" / 出来高 {r['vr']:.2f}倍{candle}"
+                f" / {r.get('fundamental_comment', 'ファンダ未取得')}"
+            )
     else:
         lines = [f"📊 **Stocknote 朝スキャン**  {now}", f"母集団 {total}銘柄を確認しましたが、分析可能な買い候補はありませんでした。"]
     text = "\n".join(lines)
@@ -162,8 +208,23 @@ def main():
         except Exception as exc:
             print(f"WARN {code}: {exc}", file=sys.stderr)
         if i % 25 == 0: print(f"scanned {i}/{len(items)}")
+    # First select genuine Bollinger-band/75-day-line pullbacks. Fundamentals
+    # are deliberately evaluated afterwards, so valuation never promotes a
+    # high-priced stock that has not actually pulled back.
     results.sort(key=lambda x:x["score"], reverse=True)
-    candidates = [row for row in results if row["score"] >= MIN_SCORE][:TOP_N]
+    pool_size = max(TOP_N, FUNDAMENTAL_POOL)
+    judged = []
+    for row in results[:pool_size]:
+        try:
+            fundamentals = get_fundamentals(row["code"])
+        except Exception as exc:
+            print(f"WARN fundamentals {row['code']}: {exc}", file=sys.stderr)
+            fundamentals = {"score": 50.0, "available": 0, "comment": "ファンダメンタル取得不可"}
+        enriched = add_fundamental_judgement(row, fundamentals)
+        if enriched:
+            judged.append(enriched)
+    judged.sort(key=lambda x:x["score"], reverse=True)
+    candidates = [row for row in judged if row["score"] >= MIN_SCORE][:TOP_N]
     if SEND_MEETING:
         post_discord(candidates, len(items))
     # This is an upsert, never a replacement: a zero-result scan leaves the
