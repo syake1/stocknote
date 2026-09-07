@@ -69,6 +69,21 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual("条件悪化", tracking.classify({"score": 35}))
         self.assertEqual("見送り", tracking.classify({"score": 20}))
 
+    def test_merge_keeps_contrarian_and_fundamental_judgement(self):
+        row = self.row("1234", score=82, price=1000)
+        row.update({
+            "technical_score": 90, "fundamental_score": 50,
+            "fundamental_available": 5, "fundamental_comment": "標準",
+            "ma75_touched": True, "ma75_distance_pct": 1.5,
+        })
+        tracking.merge_new_candidates([row], self.now)
+        saved = tracking.load_active()[0]
+        self.assertEqual(90, saved["technical_score"])
+        self.assertEqual(50, saved["fundamental_score"])
+        self.assertEqual("標準", saved["fundamental_comment"])
+        self.assertTrue(saved["ma75_touched"])
+        self.assertEqual(1.5, saved["ma75_distance_pct"])
+
 
 if __name__ == "__main__":
     unittest.main()
