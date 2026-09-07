@@ -21,6 +21,8 @@ st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
 st.caption("保存したSBI CSVを母集団に、テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
 
+SCANNER_RULE_VERSION = 2
+
 st.markdown("## 📌 現在監視中の買い候補")
 active_candidates = load_active()
 if active_candidates:
@@ -203,6 +205,8 @@ def technical_scores(code, name, hist):
 
     px = float(close.iloc[-1])
     rv = float(rsi.iloc[-1])
+    prev_px = float(close.iloc[-2])
+    prev_rsi = float(rsi.iloc[-2])
     m25 = float(ma25.iloc[-1])
     m75 = float(ma75.iloc[-1])
     m200 = float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else np.nan
@@ -219,7 +223,8 @@ def technical_scores(code, name, hist):
             if avg > 0:
                 vr = float(v.iloc[-1] / avg)
 
-    reversal = upper_wick_bear = bearish_engulfing = False
+    reversal = lower_wick_reversal = upper_wick_bear = bearish_engulfing = False
+    low = pd.to_numeric(hist["Low"], errors="coerce") if "Low" in hist else None
     if all(c in hist.columns for c in ["Open", "High"]):
         o = pd.to_numeric(hist["Open"], errors="coerce").dropna()
         hi = pd.to_numeric(hist["High"], errors="coerce").dropna()
@@ -231,6 +236,24 @@ def technical_scores(code, name, hist):
             body = abs(cnow - onow)
             upper_wick = float(hi.iloc[-1]) - max(cnow, onow)
             upper_wick_bear = bool(cnow < onow and upper_wick > max(body * 1.5, px * 0.003))
+            if low is not None and pd.notna(low.iloc[-1]):
+                body_bottom = min(cnow, onow)
+                lower_wick = body_bottom - float(low.iloc[-1])
+                lower_wick_reversal = bool(cnow >= onow and lower_wick >= max(body, px * 0.005))
+
+    recent_ma75 = pd.concat(
+        [low.rename("low"), ma75.rename("ma75")], axis=1
+    ).dropna().tail(3) if low is not None else pd.DataFrame()
+    ma75_touched = bool(not recent_ma75.empty and (recent_ma75["low"] <= recent_ma75["ma75"]).any())
+    ma75_distance_pct = float((px / m75 - 1.0) * 100.0)
+    bb_position = float((px - m25) / max(float(std25.iloc[-1]), 1e-9))
+    pullback_zone = bool(
+        28.0 <= rv <= 45.0 and px <= m25 and bb_position <= -0.5
+        and ma75_touched and px <= m75 * 1.05
+    )
+    rebound_confirmed = bool(
+        reversal or lower_wick_reversal or (px > prev_px and rv > prev_rsi)
+    )
 
     buy_rsi = float(np.clip((55 - rv) / 30 * 35, 0, 35))
     buy_bb = 25.0 if px <= blo * 1.02 else float(np.clip((m25 - px) / max(m25 - blo, 1e-9) * 20, 0, 20))
@@ -242,7 +265,11 @@ def technical_scores(code, name, hist):
     buy_score = float(np.clip(buy_rsi + buy_bb + buy_trend + buy_macd + buy_volume + buy_candle + ichimoku, 0, 100))
     quarterly_ok = bool(quarterly and quarterly["quarterly_qualified"])
     daily_bb_overextended = bool(px > bup * 1.03)
-    if not trend or not trend["buy_eligible"] or not quarterly_ok or daily_bb_overextended:
+    buy_eligible = bool(
+        trend and trend["buy_eligible"] and quarterly_ok
+        and not daily_bb_overextended and pullback_zone and rebound_confirmed
+    )
+    if not buy_eligible:
         buy_score = min(buy_score, 44.0)
 
     short_rsi = float(np.clip((rv - 55) / 25 * 35, 0, 35))
@@ -262,9 +289,12 @@ def technical_scores(code, name, hist):
         "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv,
         "出来高倍率": vr, "MA25": m25, "MA75": m75, "MA200": m200,
         "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
-        "包み陽線": reversal, "上ヒゲ陰線": upper_wick_bear, "包み陰線": bearish_engulfing,
+        "包み陽線": reversal, "下ヒゲ陽線": lower_wick_reversal,
+        "上ヒゲ陰線": upper_wick_bear, "包み陰線": bearish_engulfing,
         "買いスコア": buy_score, "空売りスコア": short_score,
-        "買い対象": bool(trend and trend["buy_eligible"] and quarterly_ok and not daily_bb_overextended),
+        "買い対象": buy_eligible, "押し目条件": pullback_zone,
+        "反転確認": rebound_confirmed, "75日線接触": ma75_touched,
+        "75日線乖離%": ma75_distance_pct, "BB位置σ": bb_position,
         "四半期足強度": quarterly["quarterly_score"] if quarterly else 0.0,
         "四半期足適合": quarterly_ok,
         "四半期足判定": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
@@ -364,10 +394,10 @@ def market_employee_score():
 
 
 def combined_score(row, side, market_score):
-    f = fundamental_employee(row["コード"])
+    f = row.get("_fundamentals") or fundamental_employee(row["コード"])
     tech = float(row["買いスコア"] if side == "buy" else row["空売りスコア"])
     if side == "buy":
-        final = tech * 0.50 + f["score"] * 0.35 + market_score * 0.15
+        final = tech * 0.80 + f["score"] * 0.20
     else:
         final = tech * 0.50 + (100 - f["score"]) * 0.35 + (100 - market_score) * 0.15
     return float(np.clip(final, 0, 100)), f
@@ -506,7 +536,7 @@ def show_buy_detail(row, market_score):
     b.metric("ファンダメンタル", f"{f['score']:.1f}/100")
     c.metric("市場環境", f"{market_score:.1f}/100")
     d.metric("総合評価", f"{final:.1f}/100")
-    st.caption("総合評価 = テクニカル50% + ファンダメンタル35% + 市場環境15%")
+    st.caption("総合評価 = 逆張りテクニカル80% + ファンダメンタル20%（市場環境は参考表示）")
 
     left, right = st.columns([3, 2])
     with left:
@@ -574,6 +604,10 @@ def show_buy_detail(row, market_score):
 
 if "scan_results" not in st.session_state:
     st.session_state.scan_results = None
+if st.session_state.get("scanner_rule_version") != SCANNER_RULE_VERSION:
+    st.session_state.scan_results = None
+    st.session_state.scanner_rule_version = SCANNER_RULE_VERSION
+    scan_items.clear()
 if "universe" not in st.session_state:
     saved, meta = load_saved_universe()
     st.session_state.universe = saved
@@ -646,7 +680,18 @@ if st.session_state.scan_results is not None:
             if forecast_per is not None and forecast_per > 25 and r.get("買い対象"):
                 r["買い対象"] = False
                 r["トレンド判定"] = "予想PER25倍超（買いは監視のみ）"
-        buy = sorted([r for r in ok if r.get("買い対象")], key=lambda x: x["買いスコア"], reverse=True)
+        buy_pre = [r for r in ok if r.get("買い対象")]
+        with st.spinner("逆張り候補のファンダメンタルを確認中…"):
+            for r in buy_pre:
+                f = fundamental_employee(r["コード"])
+                r["_fundamentals"] = f
+                r["ファンダ点"] = float(f["score"])
+                r["総合買い評価"] = float(r["買いスコア"] * 0.8 + f["score"] * 0.2)
+                if f.get("available") and f["score"] < 40:
+                    r["買い対象"] = False
+                    r["トレンド判定"] = "逆張り条件は合格・ファンダ40点未満で除外"
+        buy = sorted([r for r in buy_pre if r.get("買い対象")],
+                     key=lambda x: x["総合買い評価"], reverse=True)
         watch_only = sorted([r for r in ok if not r.get("買い対象")], key=lambda x: x["買いスコア"], reverse=True)
         short_pre = sorted([r for r in ok if r.get("空売りトレンド適合")],
                            key=lambda x: x["空売りスコア"], reverse=True)[:20]
@@ -655,8 +700,14 @@ if st.session_state.scan_results is not None:
             for r in buy:
                 new_candidates.append({
                     "code": r["コード"], "name": r["銘柄名"], "price": r["現在値"],
-                    "score": r["買いスコア"], "rsi": r["RSI14"],
+                    "score": r["総合買い評価"], "technical_score": r["買いスコア"],
+                    "fundamental_score": r["ファンダ点"],
+                    "fundamental_available": r["_fundamentals"].get("available", 0),
+                    "fundamental_comment": r["_fundamentals"].get("comment"),
+                    "rsi": r["RSI14"],
                     "ma25": r["MA25"], "ma75": r["MA75"], "ma200": r["MA200"],
+                    "ma75_touched": r["75日線接触"],
+                    "ma75_distance_pct": r["75日線乖離%"],
                     "macd": r["MACD"], "macd_signal": r["MACDシグナル"],
                     "volume_ratio": r["出来高倍率"],
                     "cloud_position": r["一目位置"], "tenkan": r["転換線"],
@@ -686,10 +737,11 @@ if st.session_state.scan_results is not None:
         tab_buy, tab_short, tab_meeting = st.tabs(["📈 買い候補", "📉 空売り候補", "👥 AI社員会議"])
         with tab_buy:
             st.subheader("買い候補ランキング")
-            st.caption("🔴 75点以上＝買い条件到達　🟡 65〜74.9点＝買い条件接近")
-            st.caption("四半期足のきれいな上昇に加え、長期上昇後に高値圏で安値を崩さない持ち合いも対象です。大きな上ヒゲと日足BB過熱は除外します。")
-            cols = ["コード", "銘柄名", "四半期足形状", "四半期足強度", "四半期RSI14", "買いスコア", "RSI14", "現在値", "日足BB上方乖離%", "一目位置",
-                    "転換線", "基準線", "転換線上抜け", "出来高倍率", "包み陽線"]
+            st.caption("75日線まで下げ、BB・RSIが売られ過ぎになった後、反転を確認した銘柄だけを表示します。")
+            st.caption("総合買い評価は逆張り80%・ファンダ20%。75日線から5%以上高い銘柄は除外します。")
+            cols = ["コード", "銘柄名", "総合買い評価", "買いスコア", "ファンダ点",
+                    "RSI14", "BB位置σ", "現在値", "75日線乖離%", "75日線接触",
+                    "反転確認", "一目位置", "出来高倍率", "包み陽線", "下ヒゲ陽線"]
             if buy:
                 buy_table = pd.DataFrame(buy)[cols].head(50)
                 st.dataframe(buy_table.style.apply(highlight_buy_score, axis=1),
