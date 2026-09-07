@@ -20,11 +20,23 @@ from stocknote_short import assess_short, number
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
 st.caption("保存したSBI CSVを母集団に、テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
+st.success("✅ 逆張り新条件 v3：75日線接触＋BB売られ過ぎ＋反転確認")
 
-SCANNER_RULE_VERSION = 2
+SCANNER_RULE_VERSION = 3
 
 st.markdown("## 📌 現在監視中の買い候補")
-active_candidates = load_active()
+stored_active_candidates = load_active()
+# Hide candidates created by the previous high-zone rules. New-rule entries
+# always carry both the MA75 touch flag and its current distance.
+active_candidates = [
+    r for r in stored_active_candidates
+    if r.get("ma75_touched") is True
+    and isinstance(r.get("ma75_distance_pct"), (int, float))
+    and r["ma75_distance_pct"] <= 5.0
+]
+hidden_old_candidates = len(stored_active_candidates) - len(active_candidates)
+if hidden_old_candidates:
+    st.caption(f"旧条件の監視候補 {hidden_old_candidates}銘柄は非表示にしました。")
 if active_candidates:
     active_rows = [{
         "コード": r.get("code"), "銘柄名": r.get("name"),
