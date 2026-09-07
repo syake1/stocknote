@@ -126,6 +126,8 @@ def _snapshot(candidate):
         "quarterly_pattern", "quarterly_high_level_consolidation",
         "quarterly_large_upper_wick", "monthly_large_upper_wick",
         "multi_timeframe_wick_risk", "daily_bb_overextended",
+        "technical_score", "fundamental_score", "fundamental_comment",
+        "fundamental_available", "ma75_touched", "ma75_distance_pct",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -170,7 +172,10 @@ def _metrics(row):
         "ma5": "ma5", "ma25": "ma25", "ma75": "ma75", "ma200": "ma200",
         "macd": "macd", "macd_signal": "macd_signal", "volume": "volume",
         "volume_ratio": "volume_ratio", "vr": "volume_ratio", "psar": "psar",
-        "atr": "atr", "score": "score",
+        "atr": "atr", "score": "score", "technical_score": "technical_score",
+        "fundamental_score": "fundamental_score",
+        "fundamental_available": "fundamental_available",
+        "ma75_distance_pct": "ma75_distance_pct",
     }
     out = {}
     for source, target in aliases.items():
@@ -182,7 +187,8 @@ def _metrics(row):
                 "quarterly_reason", "quarterly_last_confirmed",
                 "quarterly_pattern", "quarterly_high_level_consolidation",
                 "quarterly_large_upper_wick", "monthly_large_upper_wick",
-                "multi_timeframe_wick_risk", "daily_bb_overextended"):
+                "multi_timeframe_wick_risk", "daily_bb_overextended",
+                "fundamental_comment", "ma75_touched"):
         if key in row:
             out[key] = row[key]
     for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",
