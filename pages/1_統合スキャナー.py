@@ -22,7 +22,8 @@ st.title("🧭 Stocknote 統合スキャナー")
 st.caption("保存したSBI CSVを母集団に、テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
 st.success("✅ 逆張り新条件 v3：75日線接触＋BB売られ過ぎ＋反転確認")
 
-SCANNER_RULE_VERSION = 3
+SCANNER_RULE_VERSION = 4
+ENTRY_RULE_VERSION = 4
 
 st.markdown("## 📌 現在監視中の買い候補")
 stored_active_candidates = load_active()
@@ -712,6 +713,9 @@ if st.session_state.scan_results is not None:
             for r in buy:
                 new_candidates.append({
                     "code": r["コード"], "name": r["銘柄名"], "price": r["現在値"],
+                    "entry_rule_version": ENTRY_RULE_VERSION,
+                    "pullback_zone": r["押し目条件"], "rebound_confirmed": r["反転確認"],
+                    "bb_position": r["BB位置σ"],
                     "score": r["総合買い評価"], "technical_score": r["買いスコア"],
                     "fundamental_score": r["ファンダ点"],
                     "fundamental_available": r["_fundamentals"].get("available", 0),
@@ -749,7 +753,8 @@ if st.session_state.scan_results is not None:
         tab_buy, tab_short, tab_meeting = st.tabs(["📈 買い候補", "📉 空売り候補", "👥 AI社員会議"])
         with tab_buy:
             st.subheader("買い候補ランキング")
-            st.caption("75日線まで下げ、BB・RSIが売られ過ぎになった後、反転を確認した銘柄だけを表示します。")
+            st.caption("日足でBB・RSIの逆張り条件と反転を確認した監視候補です。まだ買いではありません。")
+            st.warning("実際の買い確認は、15分足パラボリックが「売り→買い」に転換した時だけDiscordへ通知します。")
             st.caption("総合買い評価は逆張り80%・ファンダ20%。75日線から5%以上高い銘柄は除外します。")
             cols = ["コード", "銘柄名", "総合買い評価", "買いスコア", "ファンダ点",
                     "RSI14", "BB位置σ", "現在値", "75日線乖離%", "75日線接触",
