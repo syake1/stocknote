@@ -92,10 +92,8 @@ def classify(metrics):
     score = _as_float(metrics.get("score") or metrics.get("買いスコア"))
     if score is None:
         return "監視継続"
-    if score >= 75:
-        return "買い条件到達"
     if score >= 65:
-        return "買い条件接近"
+        return "パラボリック待ち"
     if score >= 45:
         return "監視継続"
     if score >= 30:
@@ -128,6 +126,8 @@ def _snapshot(candidate):
         "multi_timeframe_wick_risk", "daily_bb_overextended",
         "technical_score", "fundamental_score", "fundamental_comment",
         "fundamental_available", "ma75_touched", "ma75_distance_pct",
+        "entry_rule_version", "pullback_zone", "rebound_confirmed",
+        "psar_buy_turn", "psar_bar_time",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -176,6 +176,7 @@ def _metrics(row):
         "fundamental_score": "fundamental_score",
         "fundamental_available": "fundamental_available",
         "ma75_distance_pct": "ma75_distance_pct",
+        "entry_rule_version": "entry_rule_version",
     }
     out = {}
     for source, target in aliases.items():
@@ -188,7 +189,8 @@ def _metrics(row):
                 "quarterly_pattern", "quarterly_high_level_consolidation",
                 "quarterly_large_upper_wick", "monthly_large_upper_wick",
                 "multi_timeframe_wick_risk", "daily_bb_overextended",
-                "fundamental_comment", "ma75_touched"):
+                "fundamental_comment", "ma75_touched", "pullback_zone",
+                "rebound_confirmed", "psar_buy_turn", "psar_bar_time"):
         if key in row:
             out[key] = row[key]
     for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",
@@ -230,7 +232,7 @@ def update_active(metric_rows, now=None):
         candidate.setdefault("snapshots", []).append(_snapshot(candidate))
         candidate["snapshots"] = candidate["snapshots"][-1500:]
         if new_status != old_status and new_status in {
-            "買い条件接近", "買い条件到達", "条件悪化", "見送り", "監視終了"
+            "条件悪化", "見送り", "監視終了"
         }:
             events.append({"code": code, "name": candidate.get("name", code),
                            "from": old_status, "to": new_status,
