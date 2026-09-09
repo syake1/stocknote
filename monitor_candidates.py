@@ -48,7 +48,7 @@ def psar_buy_events(rows):
     events = []
     for row in rows:
         # 買い確認は、新しい逆張りルールで登録され、現在も日足条件を
-        # 維持している候補の「最新15分足SAR転換」だけに限定する。
+        # 維持している候補の「最新日足SAR転換」だけに限定する。
         if row.get("entry_rule_version") != ENTRY_RULE_VERSION:
             continue
         if not row.get("buy_eligible") or not row.get("psar_buy_turn"):
@@ -88,7 +88,7 @@ def notify_psar(events):
     if not events:
         print("No new Parabolic SAR buy turns.")
         return
-    lines = ["✅ **Stocknote 逆張り＋15分足パラボリック買い確認**"]
+    lines = ["✅ **Stocknote 逆張り＋日足パラボリック買い確認**"]
     for event in events:
         price = event.get("price")
         price_text = f" / ¥{price:,.0f}" if isinstance(price, (int, float)) else ""
@@ -111,7 +111,7 @@ def main(force=False):
         if item.get("entry_rule_version") != ENTRY_RULE_VERSION:
             continue
         try:
-            result = download_and_calculate(item["code"], item.get("name"), intraday=True)
+            result = download_and_calculate(item["code"], item.get("name"), intraday=False)
             if result:
                 result["entry_rule_version"] = ENTRY_RULE_VERSION
                 rows.append(result)
