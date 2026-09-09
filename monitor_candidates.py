@@ -13,6 +13,7 @@ from stocknote_tracking import filter_new_notifications, load_active, update_act
 WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 JST = ZoneInfo("Asia/Tokyo")
 PSAR_NOTICE_PATH = Path(os.getenv("STOCKNOTE_DATA_DIR", "data")) / "psar_notice_state.json"
+ENTRY_RULE_VERSION = 4
 
 
 def is_market_session(now=None):
@@ -46,7 +47,11 @@ def psar_buy_events(rows):
     state = _load_psar_notice_state()
     events = []
     for row in rows:
-        if not row.get("psar_buy_turn"):
+        # 買い確認は、新しい逆張りルールで登録され、現在も日足条件を
+        # 維持している候補の「最新15分足SAR転換」だけに限定する。
+        if row.get("entry_rule_version") != ENTRY_RULE_VERSION:
+            continue
+        if not row.get("buy_eligible") or not row.get("psar_buy_turn"):
             continue
         code = str(row.get("code", "")).strip()
         bar_time = str(row.get("psar_bar_time", "")).strip()
@@ -83,11 +88,11 @@ def notify_psar(events):
     if not events:
         print("No new Parabolic SAR buy turns.")
         return
-    lines = ["📈 **Stocknote パラボリック買い転換**"]
+    lines = ["✅ **Stocknote 逆張り＋15分足パラボリック買い確認**"]
     for event in events:
         price = event.get("price")
         price_text = f" / ¥{price:,.0f}" if isinstance(price, (int, float)) else ""
-        lines.append(f"• **{event['code']} {event['name']}**: SAR 売り → 買い{price_text}")
+        lines.append(f"• **{event['code']} {event['name']}**: 逆張り候補でSAR 売り → 買い{price_text}")
     text = "\n".join(lines)[:1950]
     print(text)
     if WEBHOOK:
@@ -102,16 +107,25 @@ def main(force=False):
     active = load_active()
     rows = []
     for item in active:
+        # 旧条件の候補から買い通知を出さない。履歴自体は削除せず保存する。
+        if item.get("entry_rule_version") != ENTRY_RULE_VERSION:
+            continue
         try:
             result = download_and_calculate(item["code"], item.get("name"), intraday=True)
             if result:
+                result["entry_rule_version"] = ENTRY_RULE_VERSION
                 rows.append(result)
         except Exception as exc:
             print(f"WARN {item.get('code')}: {exc}")
     # Alert only on a sell-to-buy turn occurring on the latest 15-minute bar.
     notify_psar(psar_buy_events(rows))
     events = update_active(rows)
-    notify(filter_new_notifications(events))
+    # 点数の上昇だけでは買い通知を出さない。条件悪化・監視終了のみ通知する。
+    risk_events = [
+        event for event in filter_new_notifications(events)
+        if event.get("to") in {"条件悪化", "見送り", "監視終了"}
+    ]
+    notify(risk_events)
     print(f"Updated {len(rows)}/{len(active)} active candidates.")
 
 
