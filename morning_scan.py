@@ -21,6 +21,7 @@ from stocknote_technicals import daily_trend_context
 UNIVERSE = os.getenv("STOCKNOTE_UNIVERSE", "data/saved_universe.csv")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
 SEND_MEETING = os.getenv("STOCKNOTE_SEND_MEETING", "0") == "1"
+MEETING_LABEL = os.getenv("STOCKNOTE_MEETING_LABEL", "朝の買い候補").strip() or "朝の買い候補"
 TOP_N = int(os.getenv("STOCKNOTE_TOP_N", "10"))
 MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "0"))
 ENTRY_RULE_VERSION = 4
@@ -157,10 +158,12 @@ def score_one(code, name):
             "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up", **trend}
 
 
-def post_discord(rows, total):
-    now = datetime.now().strftime("%Y/%m/%d %H:%M")
+def build_discord_message(rows, total, meeting_label=MEETING_LABEL, now=None):
+    """Build a distinct morning/night message, including zero-result reports."""
+    now = now or datetime.now().strftime("%Y/%m/%d %H:%M")
+    heading = f"📊 **Stocknote {meeting_label}**  {now}"
     if rows:
-        lines = [f"📊 **Stocknote 朝の買い候補**  {now}", f"母集団 {total}銘柄 / 上位 {len(rows)}銘柄"]
+        lines = [heading, f"母集団 {total}銘柄 / 上位 {len(rows)}銘柄"]
         for i, r in enumerate(rows, 1):
             if r["reversal"]:
                 candle = " / 包み陽線"
@@ -180,8 +183,12 @@ def post_discord(rows, total):
                 f" / {r.get('fundamental_comment', 'ファンダ未取得')}"
             )
     else:
-        lines = [f"📊 **Stocknote 朝スキャン**  {now}", f"母集団 {total}銘柄を確認しましたが、分析可能な買い候補はありませんでした。"]
-    text = "\n".join(lines)
+        lines = [heading, f"母集団 {total}銘柄を確認しましたが、分析可能な買い候補はありませんでした。"]
+    return "\n".join(lines)
+
+
+def post_discord(rows, total):
+    text = build_discord_message(rows, total)
     print(text)
     if not WEBHOOK:
         print("DISCORD_WEBHOOK is not configured; skipping Discord post.")
