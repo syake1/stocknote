@@ -37,3 +37,16 @@ def test_missing_fundamentals_do_not_erase_a_valid_technical_signal():
     )
     assert result is not None
     assert result["score"] == 74.0
+
+
+def test_morning_and_night_meeting_labels_are_distinct():
+    morning = morning_scan.build_discord_message(
+        [], 786, meeting_label="朝の買い候補", now="2026/09/17 05:10"
+    )
+    night = morning_scan.build_discord_message(
+        [], 786, meeting_label="夜の会議（翌日候補）", now="2026/09/16 18:10"
+    )
+    assert "Stocknote 朝の買い候補" in morning
+    assert "Stocknote 夜の会議（翌日候補）" in night
+    assert "候補はありません" in morning
+    assert "候補はありません" in night
