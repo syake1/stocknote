@@ -5,4 +5,6 @@ yfinance
 requests
 beautifulsoup4
 plotly
+altair
+curl_cffi
 deep-translator
