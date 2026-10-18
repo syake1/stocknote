@@ -1,5 +1,5 @@
 from datetime import date
-from stocknote_candidate_view import candidate_day, candidate_row, daily_chart_url, price_change, signed_change
+from stocknote_candidate_view import candidate_code, candidate_day, candidate_row, price_change, selected_candidate, signed_change
 
 
 def test_price_changes_use_detection_price_and_preserve_decimal_yen():
@@ -24,10 +24,19 @@ def test_missing_or_invalid_prices_are_not_reported_as_zero():
         assert row["上昇・下落（%）"] == "—"
 
 
-def test_chart_links_support_alphanumeric_codes_and_daily_candles():
-    assert daily_chart_url("135a.T") == "https://finance.yahoo.co.jp/quote/135A.T/chart?styl=cndl&frm=dly"
-    assert daily_chart_url(None) is None
-    assert daily_chart_url("bad/url") is None
+def test_codes_are_plain_text_and_support_alphanumeric_tickers():
+    assert candidate_code("135a.T") == "135A"
+    assert candidate_row({"code": "135A"})["コード"] == "135A"
+    assert candidate_code(None) is None
+    assert candidate_code("bad/url") is None
+
+
+def test_clicking_any_cell_selects_that_candidates_chart():
+    candidates = [{"code": "1234"}, {"code": "135A"}]
+    assert selected_candidate(candidates, {"cells": [[1, "銘柄名"]]}) == candidates[1]
+    assert selected_candidate(candidates, {"cells": [[0, "コード"]]}) == candidates[0]
+    assert selected_candidate(candidates, {"cells": [[3, "コード"]]}) is None
+    assert selected_candidate(candidates, {}) is None
 
 
 def test_candidate_day_starts_at_one_and_uses_current_day_not_stale_elapsed():

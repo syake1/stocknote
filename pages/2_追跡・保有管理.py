@@ -73,7 +73,7 @@ st.markdown("## 🔄 自動監視中の買い候補")
 st.caption("新規検索が0件でも消えず、初回検出から14日間、相場中に15分ごとに再評価されます。")
 auto_active = load_active()
 if auto_active:
-    render_candidate_table(auto_active)
+    render_candidate_table(auto_active, key="tracking_candidates")
 else:
     st.info("現在、自動監視中の買い候補はありません。新規候補が検出されるとここへ追加されます。")
 

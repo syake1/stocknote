@@ -9,7 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_detail import render_extended_detail
-from stocknote_candidate_view import candidate_status, daily_chart_url, price_change, render_candidate_table, signed_change
+from stocknote_candidate_view import candidate_status, price_change, render_candidate_table, signed_change
 from stocknote_fundamentals import get_fundamentals
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
@@ -40,7 +40,7 @@ hidden_old_candidates = len(stored_active_candidates) - len(active_candidates)
 if hidden_old_candidates:
     st.caption(f"旧条件の監視候補 {hidden_old_candidates}銘柄は非表示にしました。")
 if active_candidates:
-    render_candidate_table(active_candidates)
+    render_candidate_table(active_candidates, key="scanner_candidates")
 
     # st.dataframeの行はスマホでは押しても詳細表示にならないため、
     # 明示的な選択欄を用意する。
@@ -74,10 +74,6 @@ if active_candidates:
             st.caption(
                 f"日足判定：{selected_active.get('trend_reason') or '—'}　／　"
                 f"四半期足判定：{selected_active.get('quarterly_reason') or '—'}"
-            )
-            st.markdown(
-                f"[Yahoo!ファイナンスで日足チャートを開く]"
-                f"({daily_chart_url(selected_active_code)})"
             )
 else:
     st.info("監視候補を作成中です。保存済みSBIデータがあれば、この画面で自動的に再分析します。")
