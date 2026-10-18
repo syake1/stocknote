@@ -1,9 +1,9 @@
-name: Stocknote 日足パラボリック監視
+name: Stocknote 候補の状態監視
 
 on:
   workflow_dispatch:
   schedule:
-    # 平日JST 09:00〜15:59。日足パラボリックの最新転換を監視する。
+    # 平日JST 09:00〜15:59。監視候補の状態を更新する。
     # 正確な前場・後場判定はPython側で行う。
     - cron: '*/5 0-6 * * 1-5'
 
@@ -30,7 +30,7 @@ jobs:
           python-version: '3.11'
           cache: pip
       - run: pip install --disable-pip-version-check -r requirements.txt
-      - name: Update active candidates and Parabolic SAR alerts
+      - name: Update active candidates and risk alerts
         run: python monitor_candidates.py
       - name: Persist values, alert state and completed history
         run: |

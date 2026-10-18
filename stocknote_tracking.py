@@ -45,7 +45,12 @@ def _write(path, value):
 
 def load_active():
     value = _read(ACTIVE_PATH, [])
-    return value if isinstance(value, list) else []
+    if not isinstance(value, list):
+        return []
+    for candidate in value:
+        if candidate.get("status") == "パラボリック待ち":
+            candidate["status"] = "買い候補"
+    return value
 
 
 def load_history():
@@ -93,7 +98,7 @@ def classify(metrics):
     if score is None:
         return "監視継続"
     if score >= 65:
-        return "パラボリック待ち"
+        return "買い候補"
     if score >= 45:
         return "監視継続"
     if score >= 30:
@@ -115,7 +120,7 @@ def _snapshot(candidate):
     keys = (
         "updated_at", "elapsed_days", "current_price", "return_pct", "status",
         "rsi", "bb_position", "ma5", "ma25", "ma75", "ma200", "macd",
-        "macd_signal", "volume", "volume_ratio", "psar", "atr", "score",
+        "macd_signal", "volume", "volume_ratio", "atr", "score",
         "cloud_top", "cloud_bottom", "cloud_position", "tenkan", "kijun",
         "tenkan_above_kijun", "tenkan_cross_up", "chikou_confirmed",
         "ma75_up", "ma200_up", "buy_eligible", "trend_reason",
@@ -127,7 +132,6 @@ def _snapshot(candidate):
         "technical_score", "fundamental_score", "fundamental_comment",
         "fundamental_available", "ma75_touched", "ma75_distance_pct",
         "entry_rule_version", "pullback_zone", "rebound_confirmed",
-        "psar_buy_turn", "psar_bar_time",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -171,7 +175,7 @@ def _metrics(row):
         "price": "current_price", "rsi": "rsi", "bb_position": "bb_position",
         "ma5": "ma5", "ma25": "ma25", "ma75": "ma75", "ma200": "ma200",
         "macd": "macd", "macd_signal": "macd_signal", "volume": "volume",
-        "volume_ratio": "volume_ratio", "vr": "volume_ratio", "psar": "psar",
+        "volume_ratio": "volume_ratio", "vr": "volume_ratio",
         "atr": "atr", "score": "score", "technical_score": "technical_score",
         "fundamental_score": "fundamental_score",
         "fundamental_available": "fundamental_available",
@@ -190,7 +194,7 @@ def _metrics(row):
                 "quarterly_large_upper_wick", "monthly_large_upper_wick",
                 "multi_timeframe_wick_risk", "daily_bb_overextended",
                 "fundamental_comment", "ma75_touched", "pullback_zone",
-                "rebound_confirmed", "psar_buy_turn", "psar_bar_time"):
+                "rebound_confirmed"):
         if key in row:
             out[key] = row[key]
     for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",

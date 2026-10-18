@@ -45,8 +45,12 @@ class TrackingTests(unittest.TestCase):
         events = tracking.update_active([self.row("1", score=80, price=105)], self.now + timedelta(minutes=15))
         item = tracking.load_active()[0]
         self.assertEqual(105, item["current_price"])
-        self.assertEqual("パラボリック待ち", item["status"])
-        self.assertTrue(events)
+        self.assertEqual("買い候補", item["status"])
+        self.assertEqual([], events)  # Candidate status alone is not a buy alert.
+
+    def test_legacy_waiting_label_is_read_as_candidate(self):
+        tracking._write(tracking.ACTIVE_PATH, [{"code": "1", "status": "パラボリック待ち"}])
+        self.assertEqual("買い候補", tracking.load_active()[0]["status"])
 
     def test_missing_update_keeps_candidate(self):
         tracking.merge_new_candidates([self.row("1")], self.now)
@@ -54,7 +58,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(1, len(tracking.load_active()))
 
     def test_notification_deduplication(self):
-        event = [{"code": "1", "to": "パラボリック待ち"}]
+        event = [{"code": "1", "to": "買い候補"}]
         self.assertEqual(1, len(tracking.filter_new_notifications(event)))
         self.assertEqual([], tracking.filter_new_notifications(event))
 
@@ -65,7 +69,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual("監視終了", tracking.load_history()[0]["status"])
 
     def test_states_cover_approaching_and_worsening(self):
-        self.assertEqual("パラボリック待ち", tracking.classify({"score": 68}))
+        self.assertEqual("買い候補", tracking.classify({"score": 68}))
         self.assertEqual("条件悪化", tracking.classify({"score": 35}))
         self.assertEqual("見送り", tracking.classify({"score": 20}))
 

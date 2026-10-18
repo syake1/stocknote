@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -6,10 +7,25 @@ import numpy as np
 import pandas as pd
 
 from monitor_candidates import is_market_session
+import monitor_candidates as monitor
 from stocknote_technicals import calculate, daily_trend_context, quarterly_strength_context
 
 
 class MonitorAndTechnicalTests(unittest.TestCase):
+    def test_monitor_only_notifies_existing_risk_events(self):
+        candidate = {"code": "1234", "entry_rule_version": monitor.ENTRY_RULE_VERSION}
+        risk = {"code": "1234", "to": "条件悪化"}
+        with patch.object(monitor, "load_active", return_value=[candidate]), \
+             patch.object(monitor, "download_and_calculate", return_value={"code": "1234", "score": 80, "buy_eligible": True}), \
+             patch.object(monitor, "update_active", return_value=[risk]) as update, \
+             patch.object(monitor, "filter_new_notifications", side_effect=lambda events: events), \
+             patch.object(monitor, "notify") as notify, \
+             patch.object(monitor.requests, "post") as post:
+            monitor.main(force=True)
+        update.assert_called_once()
+        notify.assert_called_once_with([risk])
+        post.assert_not_called()
+
     def test_market_sessions_and_break(self):
         jst = ZoneInfo("Asia/Tokyo")
         self.assertTrue(is_market_session(datetime(2026, 8, 27, 9, 15, tzinfo=jst)))
@@ -27,7 +43,7 @@ class MonitorAndTechnicalTests(unittest.TestCase):
         row = calculate("1234", "テスト", frame)
         for key in ("price", "rsi", "bb_position", "ma5", "ma25", "ma75",
                     "ma200", "macd", "macd_signal", "volume", "volume_ratio",
-                    "psar", "atr", "score"):
+                    "atr", "score"):
             self.assertIn(key, row)
             self.assertIsNotNone(row[key])
 
