@@ -66,11 +66,11 @@ def candidate_row(candidate):
     return {
         "コード（日足）": daily_chart_url(candidate.get("code")),
         "銘柄名": candidate.get("name"),
+        "状態": candidate_status(candidate),
         "現在値": candidate.get("current_price"),
         "値上がり・値下がり": signed_change(amount),
         "上昇・下落（%）": signed_change(percent, percent=True),
         "初回価格": candidate.get("first_price"),
-        "状態": candidate_status(candidate),
         "初回検出日時": candidate.get("first_seen_at"),
         "最終更新日時": candidate.get("updated_at"),
     }
@@ -89,7 +89,12 @@ def render_candidate_table(candidates):
         column_config={
             "コード（日足）": st.column_config.LinkColumn(
                 "コード（日足）",
+                width=90,
                 display_text=r"https://finance\.yahoo\.co\.jp/quote/([0-9A-Z]+)\.T/chart.*",
             ),
+            "銘柄名": st.column_config.TextColumn(width=165),
+            "状態": st.column_config.TextColumn(width=145),
+            "値上がり・値下がり": st.column_config.TextColumn(width=120),
+            "上昇・下落（%）": st.column_config.TextColumn(width=110),
         },
     )
