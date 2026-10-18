@@ -8,6 +8,7 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_holding_analysis import analyze_holding, market_score
+from stocknote_candidate_view import render_candidate_table
 from stocknote_tracking import holding_performance, load_active, load_history
 
 st.set_page_config(page_title="Stocknote 追跡・保有管理", layout="wide")
@@ -72,17 +73,7 @@ st.markdown("## 🔄 自動監視中の買い候補")
 st.caption("新規検索が0件でも消えず、初回検出から14日間、相場中に15分ごとに再評価されます。")
 auto_active = load_active()
 if auto_active:
-    auto_rows = []
-    for item in auto_active:
-        auto_rows.append({
-            "コード": item.get("code"), "銘柄名": item.get("name"),
-            "現在値": item.get("current_price"), "騰落率%": item.get("return_pct"),
-            "状態": item.get("status"), "経過日数": item.get("elapsed_days"),
-            "RSI14": item.get("rsi"), "BB位置σ": item.get("bb_position"),
-            "出来高倍率": item.get("volume_ratio"), "買いスコア": item.get("score"),
-            "初回検出日時": item.get("first_seen_at"), "最終更新日時": item.get("updated_at"),
-        })
-    st.dataframe(pd.DataFrame(auto_rows), hide_index=True, use_container_width=True)
+    render_candidate_table(auto_active)
 else:
     st.info("現在、自動監視中の買い候補はありません。新規候補が検出されるとここへ追加されます。")
 

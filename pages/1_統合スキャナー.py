@@ -9,6 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_detail import render_extended_detail
+from stocknote_candidate_view import candidate_status, daily_chart_url, price_change, render_candidate_table, signed_change
 from stocknote_fundamentals import get_fundamentals
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
@@ -39,13 +40,7 @@ hidden_old_candidates = len(stored_active_candidates) - len(active_candidates)
 if hidden_old_candidates:
     st.caption(f"旧条件の監視候補 {hidden_old_candidates}銘柄は非表示にしました。")
 if active_candidates:
-    active_rows = [{
-        "コード": r.get("code"), "銘柄名": r.get("name"),
-        "現在値": r.get("current_price"), "騰落率%": r.get("return_pct"),
-        "状態": r.get("status"), "初回検出日時": r.get("first_seen_at"),
-        "最終更新日時": r.get("updated_at"),
-    } for r in active_candidates]
-    st.dataframe(pd.DataFrame(active_rows), hide_index=True, use_container_width=True)
+    render_candidate_table(active_candidates)
 
     # st.dataframeの行はスマホでは押しても詳細表示にならないため、
     # 明示的な選択欄を用意する。
@@ -70,19 +65,19 @@ if active_candidates:
             price = selected_active.get("current_price")
             score = selected_active.get("score")
             rsi = selected_active.get("rsi")
-            bb_position = selected_active.get("bb_position")
+            amount_change, percent_change = price_change(selected_active)
             a1.metric("現在値", f"¥{price:,.0f}" if isinstance(price, (int, float)) else "—")
             a2.metric("逆張りスコア", f"{score:.1f}/100" if isinstance(score, (int, float)) else "—")
             a3.metric("RSI14", f"{rsi:.1f}" if isinstance(rsi, (int, float)) else "—")
-            a4.metric("BB位置", f"{bb_position:.2f}σ" if isinstance(bb_position, (int, float)) else "—")
-            st.write(f"状態：**{selected_active.get('status') or '—'}**")
+            a4.metric("初回からの値上がり・値下がり", signed_change(amount_change), signed_change(percent_change, percent=True) if percent_change is not None else None)
+            st.write(f"状態：**{candidate_status(selected_active)}**")
             st.caption(
                 f"日足判定：{selected_active.get('trend_reason') or '—'}　／　"
                 f"四半期足判定：{selected_active.get('quarterly_reason') or '—'}"
             )
             st.markdown(
-                f"[Yahoo!ファイナンスでチャートを開く]"
-                f"(https://finance.yahoo.co.jp/quote/{selected_active_code}.T)"
+                f"[Yahoo!ファイナンスで日足チャートを開く]"
+                f"({daily_chart_url(selected_active_code)})"
             )
 else:
     st.info("監視候補を作成中です。保存済みSBIデータがあれば、この画面で自動的に再分析します。")
