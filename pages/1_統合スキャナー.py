@@ -21,6 +21,8 @@ from stocknote_technicals import (
     quarterly_strength_context,
 )
 from stocknote_short import assess_short, number
+from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
+from stocknote_rotation_history import analyze_rotation_patterns, load_rotation_history
 
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
@@ -428,6 +430,11 @@ def market_employee_score():
     return score, regime, " / ".join(notes) if notes else "大きな偏りなし"
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def sector_rotation_employee():
+    return download_sector_rotation()
+
+
 def combined_score(row, side, market_score):
     f = row.get("_fundamentals") or fundamental_employee(row["コード"])
     tech = float(row["買いスコア"] if side == "buy" else row["空売りスコア"])
@@ -770,6 +777,15 @@ if st.session_state.scan_results is not None:
             merge_new_candidates(new_candidates)
         with st.spinner("市場環境を確認中…"):
             market_score, regime, market_note = market_employee_score()
+        with st.spinner("循環セクターの本日候補を確認中…"):
+            sector_rows, sector_date = sector_rotation_employee()
+            rotation_candidates = rank_rotation_stocks(sector_rows, market_score)
+            rotation_patterns = analyze_rotation_patterns(
+                rotation_candidates,
+                load_rotation_history(),
+                market_score,
+                str(sector_date)[:10] if sector_date is not None else None,
+            )
         short = []
         with st.spinner("信用売り候補のファンダメンタルを確認中…"):
             for r in short_pre:
@@ -779,7 +795,9 @@ if st.session_state.scan_results is not None:
         short.sort(key=lambda x: x["空売り総合評価"], reverse=True)
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
 
-        tab_buy, tab_short, tab_meeting = st.tabs(["📈 買いサイン", "📉 空売り候補", "👥 AI社員会議"])
+        tab_buy, tab_rotation, tab_short, tab_meeting = st.tabs(
+            ["📈 買いサイン", "🔁 循環セクター候補", "📉 空売り候補", "👥 AI社員会議"]
+        )
         with tab_buy:
             st.subheader("パラボリック買いサイン")
             st.success("日足パラボリックが「売り → 買い」に転換した当日の銘柄だけを表示します。")
@@ -805,6 +823,57 @@ if st.session_state.scan_results is not None:
                 if watch_only:
                     st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "パラボリック判定", "四半期足強度", "四半期RSI14", "四半期足判定", "月足大上ヒゲ", "日足BB上抜け過熱", "RSI14", "一目位置", "トレンド判定"]].head(100),
                                  hide_index=True, use_container_width=True)
+
+        with tab_rotation:
+            st.subheader("本日の循環セクター銘柄")
+            st.caption("業種への資金流入と個別銘柄の相対的な強さで選びます。パラボリック買いサインとは別枠です。")
+            st.warning("朝の成行は自動発注しません。SBIの寄り付き気配が前日終値より3%以上高い場合は、飛びつかず見送り判定です。")
+            if market_score <= 38:
+                st.warning("地合いはリスクオフです。候補は表示しますが『監視優先』で、買いサインにはしません。")
+            if rotation_patterns:
+                early_count = sum(bool(row["初動加速"]) for row in rotation_patterns)
+                if early_count:
+                    st.success(f"連続上位から上昇が加速し始めた候補：{early_count}銘柄")
+                else:
+                    st.info("本日は、連続上位かつ上昇加速の条件がそろった銘柄はありません。")
+                rotation_df = pd.DataFrame(rotation_patterns)
+                rotation_df.insert(0, "順位", range(1, len(rotation_df) + 1))
+                st.dataframe(
+                    rotation_df[["順位", "業種・テーマ", "コード", "銘柄名", "翌朝の扱い", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "循環点": st.column_config.NumberColumn(format="%.1f"),
+                        "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
+                        "1日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "5日加速pt": st.column_config.NumberColumn(format="%+.2f"),
+                    },
+                )
+                rotation_by_label = {
+                    f"{row['コード']} {row['銘柄名']}（{row['業種・テーマ']}）": row
+                    for row in rotation_patterns
+                }
+                selected_rotation = st.selectbox(
+                    "循環候補のチャートを見る",
+                    list(rotation_by_label),
+                    key="rotation_candidate_detail",
+                )
+                if selected_rotation:
+                    rotation_row = rotation_by_label[selected_rotation]
+                    h = detail_history(rotation_row["コード"], "日足")
+                    if h.empty:
+                        st.warning("この銘柄のチャートデータを取得できませんでした。")
+                    else:
+                        st.plotly_chart(
+                            price_chart(h.tail(TIMEFRAME_CONFIG["日足"]["bars"]), "日足"),
+                            width="stretch",
+                            config={"displayModeBar": False},
+                        )
+                st.page_link("pages/3_市場環境社員.py", label="業種全体と買い候補登録を確認")
+            else:
+                st.info("本日は、循環買い業種と個別銘柄の強さがそろった候補はありません。")
 
         with tab_short:
             st.subheader("信用売り総合ランキング")

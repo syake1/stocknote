@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from stocknote_sector_rotation import download_sector_rotation
+from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
 from stocknote_sector_entry import add_sector_candidate
 
 st.set_page_config(page_title="Stocknote 市場環境社員", layout="wide")
@@ -239,6 +239,7 @@ if view["notes"]:
 st.markdown("## 🔁 本日の業種循環")
 if sector_rows:
     rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
+    rotation_stocks = rank_rotation_stocks(sector_rows, view["score"])
     strongest = sector_rows[:3]
     asof = pd.Timestamp(sector_date).strftime("%Y/%m/%d") if sector_date is not None else "最新日足"
 
@@ -295,6 +296,29 @@ if sector_rows:
     if rotation_buys:
         names = "、".join(row["業種・テーマ"] for row in rotation_buys)
         st.success(f"買い候補（循環買い）：{names}")
+
+        st.markdown("#### 本日の循環セクター銘柄")
+        if view["score"] <= 38:
+            st.warning("地合いはリスクオフです。下表は買いサインではなく監視優先です。パラボリック転換は別に確認します。")
+        else:
+            st.info("循環セクター内で相対的に強い銘柄です。まだパラボリック買いサインではありません。")
+        if rotation_stocks:
+            ranked_df = pd.DataFrame(rotation_stocks)
+            ranked_df.insert(0, "順位", range(1, len(ranked_df) + 1))
+            st.dataframe(
+                ranked_df[["順位", "業種・テーマ", "コード", "銘柄名", "扱い", "循環点", "現在値", "1日%", "5日%", "20日%"]],
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "循環点": st.column_config.NumberColumn(format="%.1f"),
+                    "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
+                    "1日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                },
+            )
+        else:
+            st.info("循環買い業種の中に、個別銘柄の強さまで確認できた候補はありません。")
 
         st.markdown("#### 循環買いをすぐ買い候補へ入れる")
         selected_sector = st.selectbox(
