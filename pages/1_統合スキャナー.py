@@ -852,6 +852,10 @@ if st.session_state.scan_results is not None:
                 else:
                     st.info("本日は、連続上位かつ上昇加速の条件がそろった銘柄はありません。")
                 rotation_df = pd.DataFrame(rotation_patterns)
+                if "業種判定" not in rotation_df.columns:
+                    # A running Streamlit process may briefly retain rows made
+                    # before this column was introduced.
+                    rotation_df["業種判定"] = "循環買い"
                 rotation_df.insert(0, "順位", range(1, len(rotation_df) + 1))
                 st.dataframe(
                     rotation_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "初動理由", "翌朝の扱い", "5日線上抜け", "5日線乖離%", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],

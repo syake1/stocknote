@@ -238,6 +238,14 @@ if view["notes"]:
 
 st.markdown("## 🔁 本日の業種循環")
 if sector_rows:
+    for row in sector_rows:
+        if "1日上昇銘柄%" not in row:
+            stocks = row.get("銘柄候補", [])
+            row["1日上昇銘柄%"] = (
+                sum(float(stock.get("1日%", 0) or 0) > 0 for stock in stocks)
+                / len(stocks) * 100
+                if stocks else 0.0
+            )
     rotation_early = [row for row in sector_rows if row["判定"] == "循環初動"]
     rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
     rotation_active = [
@@ -313,6 +321,13 @@ if sector_rows:
             st.info("『循環初動』は当日の広がりを先に検出します。個別銘柄の5日線上抜けを初動サインにし、パラボリックは参考表示だけにします。")
         if rotation_stocks:
             ranked_df = pd.DataFrame(rotation_stocks)
+            if "業種判定" not in ranked_df.columns:
+                sector_states = {
+                    row["業種・テーマ"]: row["判定"] for row in sector_rows
+                }
+                ranked_df["業種判定"] = (
+                    ranked_df["業種・テーマ"].map(sector_states).fillna("循環買い")
+                )
             ranked_df.insert(0, "順位", range(1, len(ranked_df) + 1))
             st.dataframe(
                 ranked_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "扱い", "5日線上抜け", "5日線乖離%", "循環点", "現在値", "1日%", "5日%", "20日%"]],
