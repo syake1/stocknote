@@ -255,6 +255,10 @@ def calculate(code, name, hist):
         base = volume.iloc[-21:-1].mean() if len(volume) >= 21 else np.nan
         vr = float(vol/base) if pd.notna(base) and base > 0 else None
     px, rv = float(close.iloc[-1]), float(rsi14(close).iloc[-1])
+    ma5_cross_up = bool(
+        float(close.iloc[-2]) <= float(ma5.iloc[-2])
+        and px > float(ma5.iloc[-1])
+    )
     m25, m75 = float(ma25.iloc[-1]), float(ma75.iloc[-1])
     blo = float(lower.iloc[-1])
     bb_pos = float((px-m25) / max(float(std.iloc[-1]), 1e-9))
@@ -273,6 +277,9 @@ def calculate(code, name, hist):
         "code": str(code), "name": name or str(code), "price": px,
         "rsi": rv, "bb_position": bb_pos,
         "bb_lower_touched": bb_lower_touched, "ma5": float(ma5.iloc[-1]),
+        "ma5_cross_up": ma5_cross_up,
+        "ma5_distance_pct": (px / float(ma5.iloc[-1]) - 1) * 100,
+        "ma5_bar_time": str(close.index[-1]),
         "ma25": m25, "ma75": m75,
         "ma200": float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else None,
         "macd": float(macd.iloc[-1]), "macd_signal": float(signal.iloc[-1]),

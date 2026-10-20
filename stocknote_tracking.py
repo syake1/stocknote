@@ -89,13 +89,13 @@ def classify(metrics):
     """Translate current real indicators into a stable monitoring state."""
     if metrics.get("buy_eligible") is False:
         return "条件悪化" if metrics.get("cloud_position") == "雲の下" else "監視継続"
-    if metrics.get("psar_buy_turn"):
+    if metrics.get("ma5_cross_up"):
         return "買いサイン"
     score = _as_float(metrics.get("score") or metrics.get("買いスコア"))
     if score is None:
         return "監視継続"
     if score >= 65:
-        return "パラボリック待ち"
+        return "5日線待ち"
     if score >= 45:
         return "監視継続"
     if score >= 30:
@@ -129,6 +129,7 @@ def _snapshot(candidate):
         "technical_score", "fundamental_score", "fundamental_comment",
         "fundamental_available", "ma75_touched", "bb_lower_touched", "ma75_distance_pct",
         "entry_rule_version", "pullback_zone", "rebound_confirmed",
+        "ma5_cross_up", "ma5_distance_pct", "ma5_bar_time",
         "psar_bull", "psar_buy_turn", "psar_bar_time",
     )
     return {key: candidate.get(key) for key in keys}
@@ -178,6 +179,7 @@ def _metrics(row):
         "fundamental_score": "fundamental_score",
         "fundamental_available": "fundamental_available",
         "ma75_distance_pct": "ma75_distance_pct",
+        "ma5_distance_pct": "ma5_distance_pct",
         "entry_rule_version": "entry_rule_version",
     }
     out = {}
@@ -192,7 +194,8 @@ def _metrics(row):
                 "quarterly_large_upper_wick", "monthly_large_upper_wick",
                 "multi_timeframe_wick_risk", "daily_bb_overextended",
                 "fundamental_comment", "ma75_touched", "bb_lower_touched", "pullback_zone",
-                "rebound_confirmed", "psar_bull", "psar_buy_turn", "psar_bar_time"):
+                "rebound_confirmed", "ma5_cross_up", "ma5_bar_time",
+                "psar_bull", "psar_buy_turn", "psar_bar_time"):
         if key in row:
             out[key] = row[key]
     for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",

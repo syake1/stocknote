@@ -45,8 +45,16 @@ STOCK_NAMES = {
 }
 
 
-def classify_rotation(day1, day5, day20, breadth5, above_ma20):
+def classify_rotation(day1, day5, day20, breadth5, above_ma20, breadth1=None):
     """Classify whether a sector is receiving fresh rotation money."""
+    if (
+        breadth1 is not None
+        and day1 >= 0.6
+        and breadth1 >= 60
+        and -2.5 <= day5 < 1.0
+        and -12.0 <= day20 <= 8.0
+    ):
+        return "循環初動", "先行監視"
     if day1 > 0 and day5 >= 1.0 and breadth5 >= 60 and -3.0 <= day20 <= 8.0:
         return "循環買い", "買い候補"
     if day5 >= 1.0 and day20 > 0 and breadth5 >= 60 and above_ma20 >= 60:
@@ -59,11 +67,12 @@ def classify_rotation(day1, day5, day20, breadth5, above_ma20):
 
 
 def rank_rotation_stocks(sector_rows, market_score=50.0, limit=10):
-    """Rank leaders inside fresh-rotation sectors without calling them buy signals."""
+    """Rank leaders in early or confirmed rotation sectors."""
     ranked = []
     risk_off = float(market_score) <= 38.0
     for sector in sector_rows or []:
-        if sector.get("判定") != "循環買い":
+        sector_state = sector.get("判定")
+        if sector_state not in {"循環初動", "循環買い"}:
             continue
         sector_return = float(sector.get("5日%", 0.0) or 0.0)
         sector_flow = float(sector.get("資金流入点", 0.0) or 0.0)
@@ -72,15 +81,29 @@ def rank_rotation_stocks(sector_rows, market_score=50.0, limit=10):
             day5 = float(stock.get("5日%", 0.0) or 0.0)
             day20 = float(stock.get("20日%", 0.0) or 0.0)
             above_ma20 = bool(stock.get("20日線上"))
-            if day5 <= 0 or not above_ma20 or day1 < -2.0 or day20 > 15.0:
-                continue
-            if day5 < sector_return - 1.0:
-                continue
+            ma5_cross_up = bool(stock.get("5日線上抜け"))
+            if sector_state == "循環初動":
+                if not ma5_cross_up or day1 <= 0 or day5 < -2.0 or day20 > 15.0:
+                    continue
+            else:
+                if day5 <= 0 or not above_ma20 or day1 < -2.0 or day20 > 15.0:
+                    continue
+                if day5 < sector_return - 1.0:
+                    continue
             score = 50.0 + sector_flow * 4.0 + day5 * 3.0 + day1 * 1.5
+            score += 8.0 if ma5_cross_up else 0.0
+            score += 5.0 if sector_state == "循環初動" else 0.0
             if day20 > 10.0:
                 score -= (day20 - 10.0) * 2.0
+            if risk_off:
+                handling = "地合い逆風・監視優先"
+            elif ma5_cross_up:
+                handling = "循環初動・5日線上抜け"
+            else:
+                handling = "循環上位・5日線待ち"
             ranked.append({
                 "業種・テーマ": sector["業種・テーマ"],
+                "業種判定": sector_state,
                 "コード": stock["コード"],
                 "銘柄名": stock["銘柄名"],
                 "現在値": stock["現在値"],
@@ -88,7 +111,9 @@ def rank_rotation_stocks(sector_rows, market_score=50.0, limit=10):
                 "5日%": day5,
                 "20日%": day20,
                 "循環点": float(np.clip(score, 0, 100)),
-                "扱い": "地合い逆風・監視優先" if risk_off else "循環候補・PSAR確認前",
+                "扱い": handling,
+                "5日線上抜け": ma5_cross_up,
+                "5日線乖離%": float(stock.get("5日線乖離%", 0.0) or 0.0),
             })
     ranked.sort(key=lambda row: row["循環点"], reverse=True)
     return ranked[:limit]
@@ -110,6 +135,12 @@ def analyze_close_prices(close, baskets=None):
             if len(series) < 22:
                 continue
             current = float(series.iloc[-1])
+            previous = float(series.iloc[-2])
+            ma5 = series.rolling(5).mean()
+            ma5_cross_up = bool(
+                previous <= float(ma5.iloc[-2])
+                and current > float(ma5.iloc[-1])
+            )
             code = symbol.removesuffix(".T")
             metrics.append({
                 "コード": code,
@@ -118,8 +149,12 @@ def analyze_close_prices(close, baskets=None):
                 "1日%": (current / float(series.iloc[-2]) - 1) * 100,
                 "5日%": (current / float(series.iloc[-6]) - 1) * 100,
                 "20日%": (current / float(series.iloc[-21]) - 1) * 100,
+                "1日上昇": current > previous,
                 "5日上昇": current > float(series.iloc[-6]),
                 "20日線上": current >= float(series.tail(20).mean()),
+                "5日線上": current >= float(ma5.iloc[-1]),
+                "5日線上抜け": ma5_cross_up,
+                "5日線乖離%": (current / float(ma5.iloc[-1]) - 1) * 100,
             })
             latest_dates.append(series.index[-1])
         if not metrics:
@@ -128,10 +163,16 @@ def analyze_close_prices(close, baskets=None):
         day1 = float(frame["1日%"].mean())
         day5 = float(frame["5日%"].mean())
         day20 = float(frame["20日%"].mean())
+        breadth1 = float(frame["1日上昇"].mean() * 100)
         breadth5 = float(frame["5日上昇"].mean() * 100)
         above_ma20 = float(frame["20日線上"].mean() * 100)
-        rotation, action = classify_rotation(day1, day5, day20, breadth5, above_ma20)
-        flow_score = day1 * 0.20 + day5 * 0.50 + day20 * 0.20 + (breadth5 - 50) * 0.03
+        rotation, action = classify_rotation(
+            day1, day5, day20, breadth5, above_ma20, breadth1
+        )
+        flow_score = (
+            day1 * 0.25 + day5 * 0.45 + day20 * 0.20
+            + (breadth1 - 50) * 0.04 + (breadth5 - 50) * 0.02
+        )
         rows.append({
             "業種・テーマ": sector,
             "判定": rotation,
@@ -139,12 +180,13 @@ def analyze_close_prices(close, baskets=None):
             "1日%": day1,
             "5日%": day5,
             "20日%": day20,
+            "1日上昇銘柄%": breadth1,
             "5日上昇銘柄%": breadth5,
             "20日線上銘柄%": above_ma20,
             "資金流入点": float(flow_score),
             "取得銘柄数": len(metrics),
             "銘柄候補": sorted(
-                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%", "20日線上"]].to_dict("records"),
+                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%", "20日線上", "5日線上", "5日線上抜け", "5日線乖離%"]].to_dict("records"),
                 key=lambda item: item["5日%"],
                 reverse=True,
             ),
