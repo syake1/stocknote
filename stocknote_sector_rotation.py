@@ -108,7 +108,7 @@ def analyze_close_prices(close, baskets=None):
             "資金流入点": float(flow_score),
             "取得銘柄数": len(metrics),
             "銘柄候補": sorted(
-                frame[["コード", "銘柄名", "現在値", "5日%"]].to_dict("records"),
+                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%"]].to_dict("records"),
                 key=lambda item: item["5日%"],
                 reverse=True,
             ),
