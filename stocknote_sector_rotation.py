@@ -58,6 +58,42 @@ def classify_rotation(day1, day5, day20, breadth5, above_ma20):
     return "様子見", "中立"
 
 
+def rank_rotation_stocks(sector_rows, market_score=50.0, limit=10):
+    """Rank leaders inside fresh-rotation sectors without calling them buy signals."""
+    ranked = []
+    risk_off = float(market_score) <= 38.0
+    for sector in sector_rows or []:
+        if sector.get("判定") != "循環買い":
+            continue
+        sector_return = float(sector.get("5日%", 0.0) or 0.0)
+        sector_flow = float(sector.get("資金流入点", 0.0) or 0.0)
+        for stock in sector.get("銘柄候補", []):
+            day1 = float(stock.get("1日%", 0.0) or 0.0)
+            day5 = float(stock.get("5日%", 0.0) or 0.0)
+            day20 = float(stock.get("20日%", 0.0) or 0.0)
+            above_ma20 = bool(stock.get("20日線上"))
+            if day5 <= 0 or not above_ma20 or day1 < -2.0 or day20 > 15.0:
+                continue
+            if day5 < sector_return - 1.0:
+                continue
+            score = 50.0 + sector_flow * 4.0 + day5 * 3.0 + day1 * 1.5
+            if day20 > 10.0:
+                score -= (day20 - 10.0) * 2.0
+            ranked.append({
+                "業種・テーマ": sector["業種・テーマ"],
+                "コード": stock["コード"],
+                "銘柄名": stock["銘柄名"],
+                "現在値": stock["現在値"],
+                "1日%": day1,
+                "5日%": day5,
+                "20日%": day20,
+                "循環点": float(np.clip(score, 0, 100)),
+                "扱い": "地合い逆風・監視優先" if risk_off else "循環候補・PSAR確認前",
+            })
+    ranked.sort(key=lambda row: row["循環点"], reverse=True)
+    return ranked[:limit]
+
+
 def analyze_close_prices(close, baskets=None):
     """Return ranked sector rows from a ticker-by-column close-price frame."""
     baskets = baskets or SECTOR_BASKETS
@@ -108,7 +144,7 @@ def analyze_close_prices(close, baskets=None):
             "資金流入点": float(flow_score),
             "取得銘柄数": len(metrics),
             "銘柄候補": sorted(
-                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%"]].to_dict("records"),
+                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%", "20日線上"]].to_dict("records"),
                 key=lambda item: item["5日%"],
                 reverse=True,
             ),

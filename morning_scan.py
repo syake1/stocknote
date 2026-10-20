@@ -17,6 +17,8 @@ from monitor_candidates import notify
 from stocknote_fundamentals import get_fundamentals
 from stocknote_tracking import filter_new_notifications, merge_new_candidates
 from stocknote_technicals import daily_trend_context
+from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
+from stocknote_rotation_history import analyze_rotation_patterns, save_rotation_snapshot
 
 UNIVERSE = os.getenv("STOCKNOTE_UNIVERSE", "data/saved_universe.csv")
 WEBHOOK = os.getenv("DISCORD_WEBHOOK", "").strip()
@@ -205,6 +207,32 @@ def post_discord(rows, total):
     resp.raise_for_status()
 
 
+def update_rotation_ranking():
+    """Save one daily sector-leader snapshot and report early acceleration."""
+    sector_rows, sector_date = download_sector_rotation()
+    candidates = rank_rotation_stocks(sector_rows, market_score=50.0)
+    asof = str(sector_date)[:10] if sector_date is not None else datetime.now().strftime("%Y-%m-%d")
+    history = save_rotation_snapshot(candidates, asof)
+    patterns = analyze_rotation_patterns(candidates, history, market_score=50.0, asof=asof)
+    early = [row for row in patterns if row["初動加速"]]
+    print(f"rotation ranking: {len(candidates)} leaders / {len(early)} early accelerations")
+    if SEND_MEETING and WEBHOOK:
+        lines = [f"🔁 **Stocknote 循環セクター初動候補**  {asof}"]
+        if early:
+            for index, row in enumerate(early[:5], 1):
+                lines.append(
+                    f"{index}. **{row['コード']} {row['銘柄名']}** ({row['業種・テーマ']})"
+                    f" / 順位 {row['本日順位']} / 5日 {row['5日%']:+.2f}%"
+                    f" / 20日 {row['20日%']:+.2f}% / {row['翌朝の扱い']}"
+                )
+            lines.append("寄り付き気配が前日終値より3%以上高い場合は成行を見送り、SBIで気配を確認。自動注文はしません。")
+        else:
+            lines.append("連続上位・順位上昇・上昇加速がそろった候補はありません。")
+        response = requests.post(WEBHOOK, json={"content": "\n".join(lines)[:1950]}, timeout=20)
+        response.raise_for_status()
+    return patterns
+
+
 def main():
     if not os.path.exists(UNIVERSE):
         raise SystemExit(f"Saved universe not found: {UNIVERSE}. Register CSV in Stocknote first.")
@@ -247,6 +275,10 @@ def main():
     # active 14-day monitoring list untouched.
     events = merge_new_candidates(candidates)
     notify(filter_new_notifications(events))
+    try:
+        update_rotation_ranking()
+    except Exception as exc:
+        print(f"WARN rotation ranking: {exc}", file=sys.stderr)
     print(f"new scan: {len(candidates)} candidates from {len(items)} stocks")
 
 
