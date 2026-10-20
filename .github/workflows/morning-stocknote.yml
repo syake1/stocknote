@@ -48,7 +48,7 @@ jobs:
         run: pip install --disable-pip-version-check -r requirements.txt
 
       - name: Validate source
-        run: python -m py_compile morning_scan.py stocknote_universe.py stocknote_detail.py stocknote_fundamentals.py
+        run: python -m py_compile morning_scan.py stocknote_universe.py stocknote_detail.py stocknote_fundamentals.py stocknote_sector_rotation.py stocknote_rotation_history.py
 
       - name: Check saved SBI universe
         run: |
