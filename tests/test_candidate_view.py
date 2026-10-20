@@ -47,8 +47,8 @@ def test_candidate_day_starts_at_one_and_uses_current_day_not_stale_elapsed():
     assert candidate_day({}, today=date(2026, 10, 19)) is None
 
 
-def test_candidate_status_only_calls_latest_psar_turn_a_buy_signal():
-    waiting = {"status": "買い候補", "elapsed_days": 2, "psar_buy_turn": False}
-    buying = {"status": "監視中", "elapsed_days": 2, "psar_buy_turn": True}
-    assert candidate_status(waiting) == "パラボリック待ち（3日目）"
+def test_candidate_status_only_calls_latest_ma5_cross_a_buy_signal():
+    waiting = {"status": "買い候補", "elapsed_days": 2, "ma5_cross_up": False}
+    buying = {"status": "監視中", "elapsed_days": 2, "ma5_cross_up": True}
+    assert candidate_status(waiting) == "5日線上抜け待ち（3日目）"
     assert candidate_status(buying) == "買いサイン（3日目）"

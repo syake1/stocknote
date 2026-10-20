@@ -1,11 +1,12 @@
 from stocknote_rotation_history import analyze_rotation_patterns, load_rotation_history, save_rotation_snapshot
 
 
-def candidate(rank_return=3.0):
+def candidate(rank_return=3.0, ma5_cross=False):
     return {
         "業種・テーマ": "小売・内需", "コード": "8267", "銘柄名": "イオン",
         "現在値": 2500, "1日%": 1.2, "5日%": rank_return, "20日%": 6.0,
-        "循環点": 72.0, "扱い": "循環候補・PSAR確認前",
+        "循環点": 72.0, "扱い": "循環上位・5日線待ち",
+        "5日線上抜け": ma5_cross, "5日線乖離%": 0.5,
     }
 
 
@@ -36,3 +37,9 @@ def test_risk_off_never_labels_market_order_candidate():
     result = analyze_rotation_patterns([candidate(3.0)], history, 30, "2026-10-21")[0]
     assert result["初動加速"] is True
     assert result["翌朝の扱い"] == "寄り付き確認（地合い逆風）"
+
+
+def test_ma5_cross_is_an_early_signal_without_previous_ranking():
+    result = analyze_rotation_patterns([candidate(3.0, ma5_cross=True)], [], 55, "2026-10-21")[0]
+    assert result["初動加速"] is True
+    assert result["初動理由"] == "5日線上抜け"

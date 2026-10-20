@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 from datetime import datetime
+from pathlib import Path
+import tempfile
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -43,9 +45,23 @@ class MonitorAndTechnicalTests(unittest.TestCase):
         row = calculate("1234", "テスト", frame)
         for key in ("price", "rsi", "bb_position", "ma5", "ma25", "ma75",
                     "ma200", "macd", "macd_signal", "volume", "volume_ratio",
-                    "atr", "score"):
+                    "atr", "score", "ma5_cross_up", "ma5_distance_pct",
+                    "ma5_bar_time"):
             self.assertIn(key, row)
             self.assertIsNotNone(row[key])
+
+    def test_ma5_notification_is_deduplicated_by_bar(self):
+        row = {
+            "code": "1234", "name": "テスト", "price": 1000,
+            "entry_rule_version": monitor.ENTRY_RULE_VERSION,
+            "buy_eligible": True, "ma5_cross_up": True,
+            "ma5_bar_time": "2026-10-21 00:00:00",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            monitor, "MA5_NOTICE_PATH", Path(tmp) / "state.json"
+        ):
+            self.assertEqual(1, len(monitor.ma5_buy_events([row])))
+            self.assertEqual([], monitor.ma5_buy_events([row]))
 
     def test_ichimoku_gate_accepts_uptrend_above_cloud(self):
         index = pd.date_range("2025-01-01", periods=260, freq="D")

@@ -9,14 +9,14 @@ import stocknote_tracking as tracking
 
 
 class TrackingTests(unittest.TestCase):
-    def test_parabolic_turn_is_the_only_buy_signal_state(self):
+    def test_ma5_cross_is_the_buy_signal_state(self):
         self.assertEqual(
             "買いサイン",
-            tracking.classify({"buy_eligible": True, "psar_buy_turn": True, "score": 68}),
+            tracking.classify({"buy_eligible": True, "ma5_cross_up": True, "score": 68}),
         )
         self.assertEqual(
-            "パラボリック待ち",
-            tracking.classify({"buy_eligible": True, "psar_buy_turn": False, "score": 68}),
+            "5日線待ち",
+            tracking.classify({"buy_eligible": True, "ma5_cross_up": False, "score": 68}),
         )
 
     def setUp(self):
@@ -55,7 +55,7 @@ class TrackingTests(unittest.TestCase):
         events = tracking.update_active([self.row("1", score=80, price=105)], self.now + timedelta(minutes=15))
         item = tracking.load_active()[0]
         self.assertEqual(105, item["current_price"])
-        self.assertEqual("パラボリック待ち", item["status"])
+        self.assertEqual("5日線待ち", item["status"])
         self.assertEqual([], events)
 
     def test_missing_update_keeps_candidate(self):
@@ -75,7 +75,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual("監視終了", tracking.load_history()[0]["status"])
 
     def test_states_cover_approaching_and_worsening(self):
-        self.assertEqual("パラボリック待ち", tracking.classify({"score": 68}))
+        self.assertEqual("5日線待ち", tracking.classify({"score": 68}))
         self.assertEqual("条件悪化", tracking.classify({"score": 35}))
         self.assertEqual("見送り", tracking.classify({"score": 20}))
 
