@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from stocknote_sector_rotation import analyze_close_prices, classify_rotation
+from stocknote_sector_rotation import SECTOR_BASKETS, STOCK_NAMES, analyze_close_prices, classify_rotation
 
 
 class SectorRotationTests(unittest.TestCase):
@@ -32,7 +32,15 @@ class SectorRotationTests(unittest.TestCase):
             {"強い業種": ["A.T", "B.T"], "弱い業種": ["C.T", "D.T"]},
         )
         self.assertEqual("強い業種", rows[0]["業種・テーマ"])
+        self.assertIn("1日%", rows[0]["銘柄候補"][0])
+        self.assertIn("20日%", rows[0]["銘柄候補"][0])
         self.assertEqual(index[-1], latest)
+
+    def test_construction_sector_covers_shimizu_and_kumagai(self):
+        self.assertIn("1803.T", SECTOR_BASKETS["建設"])
+        self.assertIn("1861.T", SECTOR_BASKETS["建設"])
+        self.assertEqual("清水建設", STOCK_NAMES["1803"])
+        self.assertEqual("熊谷組", STOCK_NAMES["1861"])
 
 
 if __name__ == "__main__":
