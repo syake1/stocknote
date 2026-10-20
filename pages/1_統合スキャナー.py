@@ -210,6 +210,7 @@ def technical_scores(code, name, hist):
         return {"コード": code, "銘柄名": name or code, "error": "履歴不足"}
 
     rsi = rsi14(close)
+    ma5 = close.rolling(5).mean()
     ma25 = close.rolling(25).mean()
     ma75 = close.rolling(75).mean()
     ma200 = close.rolling(200).mean()
@@ -230,6 +231,8 @@ def technical_scores(code, name, hist):
     rv = float(rsi.iloc[-1])
     prev_px = float(close.iloc[-2])
     prev_rsi = float(rsi.iloc[-2])
+    m5 = float(ma5.iloc[-1])
+    ma5_cross_up = bool(prev_px <= float(ma5.iloc[-2]) and px > m5)
     m25 = float(ma25.iloc[-1])
     m75 = float(ma75.iloc[-1])
     m200 = float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else np.nan
@@ -298,7 +301,7 @@ def technical_scores(code, name, hist):
         trend and trend["buy_eligible"] and quarterly_ok
         and not daily_bb_overextended and pullback_zone and rebound_confirmed
     )
-    buy_signal = bool(buy_eligible and psar_buy_turn)
+    buy_signal = bool(buy_eligible and ma5_cross_up)
     if not buy_eligible:
         buy_score = min(buy_score, 44.0)
 
@@ -317,13 +320,16 @@ def technical_scores(code, name, hist):
 
     return {
         "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv,
-        "出来高倍率": vr, "MA25": m25, "MA75": m75, "MA200": m200,
+        "出来高倍率": vr, "MA5": m5, "MA25": m25, "MA75": m75, "MA200": m200,
         "BB下限": blo, "BB上限": bup, "MACD": md, "MACDシグナル": sg,
         "包み陽線": reversal, "下ヒゲ陽線": lower_wick_reversal,
         "上ヒゲ陰線": upper_wick_bear, "包み陰線": bearish_engulfing,
         "買いスコア": buy_score, "空売りスコア": short_score,
         "買い対象": buy_eligible, "押し目条件": pullback_zone,
         "買いサイン": buy_signal,
+        "5日線上抜け": ma5_cross_up,
+        "5日線乖離%": (px / m5 - 1) * 100,
+        "5日線判定日": str(close.index[-1]),
         "パラボリック": psar,
         "パラボリック買い状態": psar_bull,
         "パラボリック買い転換": psar_buy_turn,
@@ -529,6 +535,8 @@ def detail_history(code, timeframe="日足"):
     h["BB上限"] = h["MA中期"] + 2 * std
     h["BB下限"] = h["MA中期"] - 2 * std
     h["RSI14"] = rsi14(c)
+    if timeframe == "日足":
+        h["MA5"] = c.rolling(5).mean()
     return h
 
 
@@ -539,6 +547,8 @@ def price_chart(h, timeframe):
         x=h.index, open=h["Open"], high=h["High"], low=h["Low"], close=h["Close"], name="株価",
         increasing_line_color="#ef4444", increasing_fillcolor="#ef4444",
         decreasing_line_color="#3b82f6", decreasing_fillcolor="#3b82f6"))
+    if timeframe == "日足" and "MA5" in h:
+        fig.add_trace(go.Scatter(x=h.index, y=h["MA5"], mode="lines", name="MA5", line=dict(width=2)))
     for col, label in [("MA短期", f"MA{windows[0]}"), ("MA中期", f"MA{windows[1]}"), ("MA長期", f"MA{windows[2]}"),
                        ("BB上限", "+2σ"), ("BB下限", "-2σ")]:
         fig.add_trace(go.Scatter(x=h.index, y=h[col], mode="lines", name=label))
@@ -753,7 +763,11 @@ if st.session_state.scan_results is not None:
                     "fundamental_available": r["_fundamentals"].get("available", 0),
                     "fundamental_comment": r["_fundamentals"].get("comment"),
                     "rsi": r["RSI14"],
-                    "ma25": r["MA25"], "ma75": r["MA75"], "ma200": r["MA200"],
+                    "ma5": r["MA5"], "ma25": r["MA25"],
+                    "ma75": r["MA75"], "ma200": r["MA200"],
+                    "ma5_cross_up": r["5日線上抜け"],
+                    "ma5_distance_pct": r["5日線乖離%"],
+                    "ma5_bar_time": r["5日線判定日"],
                     "ma75_touched": r["75日線接触"],
                     "ma75_distance_pct": r["75日線乖離%"],
                     "macd": r["MACD"], "macd_signal": r["MACDシグナル"],
@@ -799,12 +813,13 @@ if st.session_state.scan_results is not None:
             ["📈 買いサイン", "🔁 循環セクター候補", "📉 空売り候補", "👥 AI社員会議"]
         )
         with tab_buy:
-            st.subheader("パラボリック買いサイン")
-            st.success("日足パラボリックが「売り → 買い」に転換した当日の銘柄だけを表示します。")
+            st.subheader("5日線上抜け買いサイン")
+            st.success("逆張り条件を満たし、終値が5日線を下から上抜けた銘柄を表示します。パラボリックは参考表示です。")
             st.caption("総合買い評価は逆張り80%・ファンダ20%。75日線から5%以上高い銘柄は除外します。")
             cols = ["コード", "銘柄名", "総合買い評価", "買いスコア", "ファンダ点",
                     "RSI14", "BB位置σ", "現在値", "75日線乖離%", "75日線接触",
-                    "BB下限到達", "パラボリック判定", "反転確認", "一目位置",
+                    "BB下限到達", "5日線上抜け", "5日線乖離%", "MA5",
+                    "パラボリック判定", "反転確認", "一目位置",
                     "出来高倍率", "包み陽線", "下ヒゲ陽線"]
             if buy:
                 buy_table = pd.DataFrame(buy)[cols].head(50)
@@ -818,15 +833,15 @@ if st.session_state.scan_results is not None:
                     with st.spinner(f"{code} の詳細分析中…"):
                         show_buy_detail(row, market_score)
             else:
-                st.info("現在、パラボリックが買い転換した銘柄はありません。買いサインは出していません。")
-            with st.expander(f"パラボリック待ち・監視のみ（{len(watch_only)}件）"):
+                st.info("現在、5日線を上抜けた銘柄はありません。買いサインは出していません。")
+            with st.expander(f"5日線上抜け待ち・監視のみ（{len(watch_only)}件）"):
                 if watch_only:
-                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "パラボリック判定", "四半期足強度", "四半期RSI14", "四半期足判定", "月足大上ヒゲ", "日足BB上抜け過熱", "RSI14", "一目位置", "トレンド判定"]].head(100),
+                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "5日線上抜け", "5日線乖離%", "MA5", "パラボリック判定", "四半期足強度", "四半期RSI14", "四半期足判定", "月足大上ヒゲ", "日足BB上抜け過熱", "RSI14", "一目位置", "トレンド判定"]].head(100),
                                  hide_index=True, use_container_width=True)
 
         with tab_rotation:
             st.subheader("本日の循環セクター銘柄")
-            st.caption("業種への資金流入と個別銘柄の相対的な強さで選びます。パラボリック買いサインとは別枠です。")
+            st.caption("当日の業種内上昇率で『循環初動』を先に拾い、5日線上抜けを銘柄の初動サインにします。パラボリックは参考表示だけです。")
             st.warning("朝の成行は自動発注しません。SBIの寄り付き気配が前日終値より3%以上高い場合は、飛びつかず見送り判定です。")
             if market_score <= 38:
                 st.warning("地合いはリスクオフです。候補は表示しますが『監視優先』で、買いサインにはしません。")
@@ -839,7 +854,7 @@ if st.session_state.scan_results is not None:
                 rotation_df = pd.DataFrame(rotation_patterns)
                 rotation_df.insert(0, "順位", range(1, len(rotation_df) + 1))
                 st.dataframe(
-                    rotation_df[["順位", "業種・テーマ", "コード", "銘柄名", "翌朝の扱い", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
+                    rotation_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "初動理由", "翌朝の扱い", "5日線上抜け", "5日線乖離%", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
                     hide_index=True,
                     width="stretch",
                     column_config={
@@ -849,6 +864,7 @@ if st.session_state.scan_results is not None:
                         "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
                         "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
                         "5日加速pt": st.column_config.NumberColumn(format="%+.2f"),
+                        "5日線乖離%": st.column_config.NumberColumn(format="%+.2f%%"),
                     },
                 )
                 rotation_by_label = {

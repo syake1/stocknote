@@ -70,8 +70,8 @@ def init_db():
 init_db()
 
 # ======================== 自動監視候補 ========================
-st.markdown("## 🔄 パラボリック買い転換の監視")
-st.caption("転換前は監視中として扱い、日足パラボリックが「売り → 買い」に転換した当日だけ買いサインを表示します。")
+st.markdown("## 🔄 5日線上抜けの監視")
+st.caption("逆張り候補が終値で5日線を下から上抜けた当日を初動サインにします。パラボリックは参考表示だけです。")
 stored_auto_active = load_active()
 auto_active = [
     item for item in stored_auto_active
@@ -82,16 +82,16 @@ hidden_old_candidates = len(stored_auto_active) - len(auto_active)
 if hidden_old_candidates:
     st.caption(f"BB下限未到達または旧条件の候補 {hidden_old_candidates}銘柄は監視対象から除外しました。")
 
-buy_signals = [item for item in auto_active if item.get("psar_buy_turn")]
-waiting_candidates = [item for item in auto_active if not item.get("psar_buy_turn")]
+buy_signals = [item for item in auto_active if item.get("ma5_cross_up")]
+waiting_candidates = [item for item in auto_active if not item.get("ma5_cross_up")]
 if buy_signals:
-    st.success(f"パラボリック買いサイン：{len(buy_signals)}銘柄")
+    st.success(f"5日線上抜け買いサイン：{len(buy_signals)}銘柄")
     render_candidate_table(buy_signals, key="tracking_buy_signals")
 else:
-    st.info("現在、パラボリックが買い転換した銘柄はありません。買いサインは出していません。")
+    st.info("現在、5日線を上抜けた銘柄はありません。買いサインは出していません。")
 
 if waiting_candidates:
-    with st.expander(f"監視中・パラボリック待ち（{len(waiting_candidates)}銘柄）"):
+    with st.expander(f"監視中・5日線上抜け待ち（{len(waiting_candidates)}銘柄）"):
         render_candidate_table(waiting_candidates, key="tracking_waiting_candidates")
 elif not auto_active:
     st.caption("監視対象はありません。統合スキャナーで条件に合う銘柄が検出されると追加されます。")

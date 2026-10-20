@@ -238,7 +238,11 @@ if view["notes"]:
 
 st.markdown("## 🔁 本日の業種循環")
 if sector_rows:
+    rotation_early = [row for row in sector_rows if row["判定"] == "循環初動"]
     rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
+    rotation_active = [
+        row for row in sector_rows if row["判定"] in {"循環初動", "循環買い"}
+    ]
     rotation_stocks = rank_rotation_stocks(sector_rows, view["score"])
     strongest = sector_rows[:3]
     asof = pd.Timestamp(sector_date).strftime("%Y/%m/%d") if sector_date is not None else "最新日足"
@@ -278,6 +282,7 @@ if sector_rows:
                     st.warning("この銘柄のチャートデータを取得できませんでした。")
                 else:
                     price_chart = price_history[["Close"]].rename(columns={"Close": "終値"}).copy()
+                    price_chart["5日線"] = price_chart["終値"].rolling(5).mean()
                     price_chart["20日線"] = price_chart["終値"].rolling(20).mean()
                     price_chart["60日線"] = price_chart["終値"].rolling(60).mean()
                     m1, m2, m3, m4 = st.columns(4)
@@ -287,26 +292,30 @@ if sector_rows:
                     m4.metric("20日", f"{chart_stock['20日%']:+.2f}%")
                     st.line_chart(
                         price_chart.tail(130),
-                        y=["終値", "20日線", "60日線"],
+                        y=["終値", "5日線", "20日線", "60日線"],
                         x_label="日付",
                         y_label="株価（円）",
                     )
 
     st.markdown("### 本日の買い候補セクター")
-    if rotation_buys:
-        names = "、".join(row["業種・テーマ"] for row in rotation_buys)
-        st.success(f"買い候補（循環買い）：{names}")
+    if rotation_active:
+        if rotation_early:
+            names = "、".join(row["業種・テーマ"] for row in rotation_early)
+            st.success(f"先行監視（循環初動）：{names}")
+        if rotation_buys:
+            names = "、".join(row["業種・テーマ"] for row in rotation_buys)
+            st.success(f"買い候補（循環買い）：{names}")
 
         st.markdown("#### 本日の循環セクター銘柄")
         if view["score"] <= 38:
-            st.warning("地合いはリスクオフです。下表は買いサインではなく監視優先です。パラボリック転換は別に確認します。")
+            st.warning("地合いはリスクオフです。下表は買いサインではなく監視優先です。")
         else:
-            st.info("循環セクター内で相対的に強い銘柄です。まだパラボリック買いサインではありません。")
+            st.info("『循環初動』は当日の広がりを先に検出します。個別銘柄の5日線上抜けを初動サインにし、パラボリックは参考表示だけにします。")
         if rotation_stocks:
             ranked_df = pd.DataFrame(rotation_stocks)
             ranked_df.insert(0, "順位", range(1, len(ranked_df) + 1))
             st.dataframe(
-                ranked_df[["順位", "業種・テーマ", "コード", "銘柄名", "扱い", "循環点", "現在値", "1日%", "5日%", "20日%"]],
+                ranked_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "扱い", "5日線上抜け", "5日線乖離%", "循環点", "現在値", "1日%", "5日%", "20日%"]],
                 hide_index=True,
                 width="stretch",
                 column_config={
@@ -315,17 +324,18 @@ if sector_rows:
                     "1日%": st.column_config.NumberColumn(format="%+.2f%%"),
                     "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
                     "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "5日線乖離%": st.column_config.NumberColumn(format="%+.2f%%"),
                 },
             )
         else:
-            st.info("循環買い業種の中に、個別銘柄の強さまで確認できた候補はありません。")
+            st.info("循環初動・循環買い業種の中に、個別銘柄の条件がそろった候補はありません。")
 
-        st.markdown("#### 循環買いをすぐ買い候補へ入れる")
+        st.markdown("#### 循環初動・循環買いを買い候補へ入れる")
         selected_sector = st.selectbox(
-            "循環買いセクター",
-            [row["業種・テーマ"] for row in rotation_buys],
+            "循環セクター",
+            [row["業種・テーマ"] for row in rotation_active],
         )
-        selected_row = next(row for row in rotation_buys if row["業種・テーマ"] == selected_sector)
+        selected_row = next(row for row in rotation_active if row["業種・テーマ"] == selected_sector)
         stock_options = selected_row.get("銘柄候補", [])
         if stock_options:
             selected_code = st.selectbox(
@@ -349,11 +359,11 @@ if sector_rows:
                 if added:
                     st.success(f"{selected_stock['コード']} {selected_stock['銘柄名']} を追跡へ登録しました。")
                 else:
-                    st.info("この銘柄は本日の循環買い候補として登録済みです。")
+                    st.info("この銘柄は本日の循環候補として登録済みです。")
             st.page_link("pages/2_追跡・保有管理.py", label="追跡・保有管理で確認")
             st.caption("ここでは買い候補への記録だけを行います。証券会社への発注は行いません。")
     else:
-        st.info("本日は『循環買い』の条件を満たす業種はありません。無理に業種買いをしない判定です。")
+        st.info("本日は『循環初動』『循環買い』の条件を満たす業種はありません。無理に業種買いをしない判定です。")
     st.caption(f"判定日：{asof}。代表銘柄の等ウェイト平均で、短期資金の向きを毎日判定しています。")
 
     top_cols = st.columns(3)
@@ -367,7 +377,7 @@ if sector_rows:
     sector_df = pd.DataFrame(sector_rows)
     display_columns = [
         "業種・テーマ", "判定", "売買目安", "1日%", "5日%", "20日%",
-        "5日上昇銘柄%", "20日線上銘柄%", "取得銘柄数",
+        "1日上昇銘柄%", "5日上昇銘柄%", "20日線上銘柄%", "取得銘柄数",
     ]
     st.dataframe(
         sector_df[display_columns],
@@ -377,6 +387,7 @@ if sector_rows:
             "1日%": st.column_config.NumberColumn(format="%+.2f%%"),
             "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
             "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
+            "1日上昇銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
             "5日上昇銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
             "20日線上銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
         },
@@ -385,7 +396,7 @@ if sector_rows:
         sector_df.set_index("業種・テーマ")[["5日%"]],
         horizontal=True,
     )
-    st.caption("循環買い＝1日・5日が上向き、5日上昇銘柄が60%以上、20日騰落が過熱し過ぎていない業種。上昇継続は追い掛けず押し目待ちです。")
+    st.caption("循環初動＝当日+0.6%以上、業種内の当日上昇銘柄60%以上で、5日上昇がまだ完成前の業種。循環買い＝1日・5日が上向き、5日上昇銘柄60%以上。上昇継続は追い掛けず押し目待ちです。")
 else:
     st.warning("業種別データを取得できませんでした。世界市場の判定だけを表示しています。")
 
