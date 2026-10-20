@@ -1,4 +1,5 @@
 import math
+import os
 from datetime import datetime
 
 import numpy as np
@@ -7,6 +8,7 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_sector_rotation import download_sector_rotation
+from stocknote_sector_entry import add_sector_candidate
 
 st.set_page_config(page_title="Stocknote 市場環境社員", layout="wide")
 st.title("🌍 Stocknote 市場環境社員")
@@ -28,6 +30,7 @@ MARKETS = {
     "米10年金利": "^TNX",
     "米30年金利": "^TYX",
 }
+DB_PATH = os.getenv("STOCKNOTE_DB_PATH", "data/stocknote.sqlite3")
 
 
 def _flat_history(symbol):
@@ -85,6 +88,11 @@ def load_market_data():
 @st.cache_data(ttl=600, show_spinner=False)
 def load_sector_rotation():
     return download_sector_rotation()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_stock_chart(code):
+    return _flat_history(f"{code}.T")
 
 
 def row_map(rows):
@@ -233,10 +241,93 @@ if sector_rows:
     rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
     strongest = sector_rows[:3]
     asof = pd.Timestamp(sector_date).strftime("%Y/%m/%d") if sector_date is not None else "最新日足"
+
+    st.markdown("### 業種から銘柄チャートを見る")
+    st.caption("業種を押し、次に銘柄を押すと日足チャートが表示されます。")
+    sector_names = [row["業種・テーマ"] for row in sector_rows]
+    chart_sector = st.pills(
+        "業種",
+        sector_names,
+        default=sector_names[0],
+        selection_mode="single",
+        wrap=True,
+        key="rotation_chart_sector",
+    )
+    if chart_sector:
+        chart_sector_row = next(row for row in sector_rows if row["業種・テーマ"] == chart_sector)
+        chart_stocks = chart_sector_row.get("銘柄候補", [])
+        if chart_stocks:
+            stock_labels = {
+                f"{item['コード']} {item['銘柄名']}": item
+                for item in chart_stocks
+            }
+            chart_stock_label = st.pills(
+                "銘柄",
+                list(stock_labels),
+                default=next(iter(stock_labels)),
+                selection_mode="single",
+                wrap=True,
+                key=f"rotation_chart_stock_{chart_sector}",
+            )
+            if chart_stock_label:
+                chart_stock = stock_labels[chart_stock_label]
+                with st.spinner(f"{chart_stock_label} のチャートを読み込んでいます…"):
+                    price_history = load_stock_chart(chart_stock["コード"])
+                if price_history.empty:
+                    st.warning("この銘柄のチャートデータを取得できませんでした。")
+                else:
+                    price_chart = price_history[["Close"]].rename(columns={"Close": "終値"}).copy()
+                    price_chart["20日線"] = price_chart["終値"].rolling(20).mean()
+                    price_chart["60日線"] = price_chart["終値"].rolling(60).mean()
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("現在値", f"¥{chart_stock['現在値']:,.1f}")
+                    m2.metric("1日", f"{chart_stock['1日%']:+.2f}%")
+                    m3.metric("5日", f"{chart_stock['5日%']:+.2f}%")
+                    m4.metric("20日", f"{chart_stock['20日%']:+.2f}%")
+                    st.line_chart(
+                        price_chart.tail(130),
+                        y=["終値", "20日線", "60日線"],
+                        x_label="日付",
+                        y_label="株価（円）",
+                    )
+
     st.markdown("### 本日の買い候補セクター")
     if rotation_buys:
         names = "、".join(row["業種・テーマ"] for row in rotation_buys)
         st.success(f"買い候補（循環買い）：{names}")
+
+        st.markdown("#### 循環買いをすぐ買い候補へ入れる")
+        selected_sector = st.selectbox(
+            "循環買いセクター",
+            [row["業種・テーマ"] for row in rotation_buys],
+        )
+        selected_row = next(row for row in rotation_buys if row["業種・テーマ"] == selected_sector)
+        stock_options = selected_row.get("銘柄候補", [])
+        if stock_options:
+            selected_code = st.selectbox(
+                "登録する代表銘柄",
+                [item["コード"] for item in stock_options],
+                format_func=lambda code: next(
+                    f"{item['コード']} {item['銘柄名']}　現在値 ¥{item['現在値']:,.1f}　5日 {item['5日%']:+.2f}%"
+                    for item in stock_options if item["コード"] == code
+                ),
+            )
+            selected_stock = next(item for item in stock_options if item["コード"] == selected_code)
+            if st.button("買い候補へ入れる（注文は送信しません）", type="primary", width="stretch"):
+                added = add_sector_candidate(
+                    DB_PATH,
+                    selected_stock["コード"],
+                    selected_stock["銘柄名"],
+                    selected_sector,
+                    asof.replace("/", "-"),
+                    selected_stock["現在値"],
+                )
+                if added:
+                    st.success(f"{selected_stock['コード']} {selected_stock['銘柄名']} を追跡へ登録しました。")
+                else:
+                    st.info("この銘柄は本日の循環買い候補として登録済みです。")
+            st.page_link("pages/2_追跡・保有管理.py", label="追跡・保有管理で確認")
+            st.caption("ここでは買い候補への記録だけを行います。証券会社への発注は行いません。")
     else:
         st.info("本日は『循環買い』の条件を満たす業種はありません。無理に業種買いをしない判定です。")
     st.caption(f"判定日：{asof}。代表銘柄の等ウェイト平均で、短期資金の向きを毎日判定しています。")
@@ -280,7 +371,7 @@ if ok:
     show = df[["市場", "現在値", "1日%", "5日%", "20日%", "20日線上", "60日線上"]].copy()
     for c in ["現在値", "1日%", "5日%", "20日%"]:
         show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
-    st.dataframe(show, hide_index=True, use_container_width=True)
+    st.dataframe(show, hide_index=True, width="stretch")
 else:
     st.error("市場データを取得できませんでした。")
 
