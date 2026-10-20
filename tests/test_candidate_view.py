@@ -1,5 +1,5 @@
 from datetime import date
-from stocknote_candidate_view import candidate_code, candidate_day, candidate_row, price_change, selected_candidate, signed_change
+from stocknote_candidate_view import candidate_code, candidate_day, candidate_row, candidate_status, price_change, selected_candidate, signed_change
 
 
 def test_price_changes_use_detection_price_and_preserve_decimal_yen():
@@ -45,3 +45,10 @@ def test_candidate_day_starts_at_one_and_uses_current_day_not_stale_elapsed():
     assert candidate_day(candidate, today=date(2026, 10, 19)) == 4
     assert candidate_day({"elapsed_days": 2}, today=date(2026, 10, 19)) == 3
     assert candidate_day({}, today=date(2026, 10, 19)) is None
+
+
+def test_candidate_status_only_calls_latest_psar_turn_a_buy_signal():
+    waiting = {"status": "買い候補", "elapsed_days": 2, "psar_buy_turn": False}
+    buying = {"status": "監視中", "elapsed_days": 2, "psar_buy_turn": True}
+    assert candidate_status(waiting) == "パラボリック待ち（3日目）"
+    assert candidate_status(buying) == "買いサイン（3日目）"

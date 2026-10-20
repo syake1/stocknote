@@ -9,6 +9,16 @@ import stocknote_tracking as tracking
 
 
 class TrackingTests(unittest.TestCase):
+    def test_parabolic_turn_is_the_only_buy_signal_state(self):
+        self.assertEqual(
+            "買いサイン",
+            tracking.classify({"buy_eligible": True, "psar_buy_turn": True, "score": 68}),
+        )
+        self.assertEqual(
+            "パラボリック待ち",
+            tracking.classify({"buy_eligible": True, "psar_buy_turn": False, "score": 68}),
+        )
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
@@ -45,12 +55,8 @@ class TrackingTests(unittest.TestCase):
         events = tracking.update_active([self.row("1", score=80, price=105)], self.now + timedelta(minutes=15))
         item = tracking.load_active()[0]
         self.assertEqual(105, item["current_price"])
-        self.assertEqual("買い候補", item["status"])
-        self.assertEqual([], events)  # Candidate status alone is not a buy alert.
-
-    def test_legacy_waiting_label_is_read_as_candidate(self):
-        tracking._write(tracking.ACTIVE_PATH, [{"code": "1", "status": "パラボリック待ち"}])
-        self.assertEqual("買い候補", tracking.load_active()[0]["status"])
+        self.assertEqual("パラボリック待ち", item["status"])
+        self.assertEqual([], events)
 
     def test_missing_update_keeps_candidate(self):
         tracking.merge_new_candidates([self.row("1")], self.now)
@@ -69,7 +75,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual("監視終了", tracking.load_history()[0]["status"])
 
     def test_states_cover_approaching_and_worsening(self):
-        self.assertEqual("買い候補", tracking.classify({"score": 68}))
+        self.assertEqual("パラボリック待ち", tracking.classify({"score": 68}))
         self.assertEqual("条件悪化", tracking.classify({"score": 35}))
         self.assertEqual("見送り", tracking.classify({"score": 20}))
 

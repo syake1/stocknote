@@ -13,6 +13,16 @@ def test_ma75_touch_is_required_within_recent_three_days():
     )
 
 
+def test_bb_lower_touch_requires_actual_low_reach():
+    lower = pd.Series([100.0, 101.0, 102.0])
+    assert morning_scan.touched_bb_lower_recently(
+        pd.Series([103.0, 100.5, 104.0]), lower
+    )
+    assert not morning_scan.touched_bb_lower_recently(
+        pd.Series([103.0, 102.0, 104.0]), lower
+    )
+
+
 def test_contrarian_score_remains_primary_after_fundamental_check():
     row = {"score": 90.0, "code": "1234"}
     result = morning_scan.add_fundamental_judgement(
