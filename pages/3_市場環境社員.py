@@ -6,6 +6,8 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+from stocknote_sector_rotation import download_sector_rotation
+
 st.set_page_config(page_title="Stocknote 市場環境社員", layout="wide")
 st.title("🌍 Stocknote 市場環境社員")
 st.caption("世界の株価指数・日経先物・半導体・原油・為替・金利・商品をまとめて確認し、日本株への追い風／逆風を判定します。")
@@ -78,6 +80,11 @@ def load_market_data():
             "取得": True,
         })
     return rows
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_sector_rotation():
+    return download_sector_rotation()
 
 
 def row_map(rows):
@@ -190,11 +197,14 @@ def market_employee(rows):
     }
 
 
-if st.button("🔄 市場環境を更新", type="primary", use_container_width=True):
+if st.button("🔄 市場環境を更新", type="primary", width="stretch"):
     load_market_data.clear()
+    load_sector_rotation.clear()
 
 with st.spinner("世界市場を確認しています…"):
     rows = load_market_data()
+with st.spinner("日本株の業種別資金流入を確認しています…"):
+    sector_rows, sector_date = load_sector_rotation()
 
 ok = [r for r in rows if r.get("取得")]
 bad = [r for r in rows if not r.get("取得")]
@@ -217,6 +227,52 @@ with cb:
 
 if view["notes"]:
     st.caption("注目点: " + " / ".join(view["notes"]))
+
+st.markdown("## 🔁 本日の業種循環")
+if sector_rows:
+    rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
+    strongest = sector_rows[:3]
+    asof = pd.Timestamp(sector_date).strftime("%Y/%m/%d") if sector_date is not None else "最新日足"
+    st.markdown("### 本日の買い候補セクター")
+    if rotation_buys:
+        names = "、".join(row["業種・テーマ"] for row in rotation_buys)
+        st.success(f"買い候補（循環買い）：{names}")
+    else:
+        st.info("本日は『循環買い』の条件を満たす業種はありません。無理に業種買いをしない判定です。")
+    st.caption(f"判定日：{asof}。代表銘柄の等ウェイト平均で、短期資金の向きを毎日判定しています。")
+
+    top_cols = st.columns(3)
+    for column, row in zip(top_cols, strongest):
+        column.metric(
+            row["業種・テーマ"],
+            row["判定"],
+            f"5日 {row['5日%']:+.2f}%",
+        )
+
+    sector_df = pd.DataFrame(sector_rows)
+    display_columns = [
+        "業種・テーマ", "判定", "売買目安", "1日%", "5日%", "20日%",
+        "5日上昇銘柄%", "20日線上銘柄%", "取得銘柄数",
+    ]
+    st.dataframe(
+        sector_df[display_columns],
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "1日%": st.column_config.NumberColumn(format="%+.2f%%"),
+            "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
+            "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
+            "5日上昇銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
+            "20日線上銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
+        },
+    )
+    st.bar_chart(
+        sector_df.set_index("業種・テーマ")[["5日%"]],
+        horizontal=True,
+    )
+    st.caption("循環買い＝1日・5日が上向き、5日上昇銘柄が60%以上、20日騰落が過熱し過ぎていない業種。上昇継続は追い掛けず押し目待ちです。")
+else:
+    st.warning("業種別データを取得できませんでした。世界市場の判定だけを表示しています。")
 
 st.markdown("## 📊 世界市場一覧")
 if ok:

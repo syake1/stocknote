@@ -16,6 +16,7 @@ st.title("📌 Stocknote 追跡・保有管理")
 st.caption("候補の経過追跡・実保有株・現在資金・損益をStocknote内で一括管理します。固定300万円は使いません。")
 
 DB_PATH = os.getenv("STOCKNOTE_DB_PATH", "data/stocknote.sqlite3")
+ENTRY_RULE_VERSION = 5
 os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
 
 
@@ -69,13 +70,31 @@ def init_db():
 init_db()
 
 # ======================== 自動監視候補 ========================
-st.markdown("## 🔄 自動監視中の買い候補")
-st.caption("新規検索が0件でも消えず、初回検出から14日間、相場中に15分ごとに再評価されます。")
-auto_active = load_active()
-if auto_active:
-    render_candidate_table(auto_active, key="tracking_candidates")
+st.markdown("## 🔄 パラボリック買い転換の監視")
+st.caption("転換前は監視中として扱い、日足パラボリックが「売り → 買い」に転換した当日だけ買いサインを表示します。")
+stored_auto_active = load_active()
+auto_active = [
+    item for item in stored_auto_active
+    if item.get("entry_rule_version") == ENTRY_RULE_VERSION
+    and item.get("bb_lower_touched") is True
+]
+hidden_old_candidates = len(stored_auto_active) - len(auto_active)
+if hidden_old_candidates:
+    st.caption(f"BB下限未到達または旧条件の候補 {hidden_old_candidates}銘柄は監視対象から除外しました。")
+
+buy_signals = [item for item in auto_active if item.get("psar_buy_turn")]
+waiting_candidates = [item for item in auto_active if not item.get("psar_buy_turn")]
+if buy_signals:
+    st.success(f"パラボリック買いサイン：{len(buy_signals)}銘柄")
+    render_candidate_table(buy_signals, key="tracking_buy_signals")
 else:
-    st.info("現在、自動監視中の買い候補はありません。新規候補が検出されるとここへ追加されます。")
+    st.info("現在、パラボリックが買い転換した銘柄はありません。買いサインは出していません。")
+
+if waiting_candidates:
+    with st.expander(f"監視中・パラボリック待ち（{len(waiting_candidates)}銘柄）"):
+        render_candidate_table(waiting_candidates, key="tracking_waiting_candidates")
+elif not auto_active:
+    st.caption("監視対象はありません。統合スキャナーで条件に合う銘柄が検出されると追加されます。")
 
 with st.expander("📚 14日間の監視を終了した検証履歴"):
     completed = load_history()
