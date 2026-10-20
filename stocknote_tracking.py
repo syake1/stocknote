@@ -45,12 +45,7 @@ def _write(path, value):
 
 def load_active():
     value = _read(ACTIVE_PATH, [])
-    if not isinstance(value, list):
-        return []
-    for candidate in value:
-        if candidate.get("status") == "パラボリック待ち":
-            candidate["status"] = "買い候補"
-    return value
+    return value if isinstance(value, list) else []
 
 
 def load_history():
@@ -94,11 +89,13 @@ def classify(metrics):
     """Translate current real indicators into a stable monitoring state."""
     if metrics.get("buy_eligible") is False:
         return "条件悪化" if metrics.get("cloud_position") == "雲の下" else "監視継続"
+    if metrics.get("psar_buy_turn"):
+        return "買いサイン"
     score = _as_float(metrics.get("score") or metrics.get("買いスコア"))
     if score is None:
         return "監視継続"
     if score >= 65:
-        return "買い候補"
+        return "パラボリック待ち"
     if score >= 45:
         return "監視継続"
     if score >= 30:
@@ -130,8 +127,9 @@ def _snapshot(candidate):
         "quarterly_large_upper_wick", "monthly_large_upper_wick",
         "multi_timeframe_wick_risk", "daily_bb_overextended",
         "technical_score", "fundamental_score", "fundamental_comment",
-        "fundamental_available", "ma75_touched", "ma75_distance_pct",
+        "fundamental_available", "ma75_touched", "bb_lower_touched", "ma75_distance_pct",
         "entry_rule_version", "pullback_zone", "rebound_confirmed",
+        "psar_bull", "psar_buy_turn", "psar_bar_time",
     )
     return {key: candidate.get(key) for key in keys}
 
@@ -193,8 +191,8 @@ def _metrics(row):
                 "quarterly_pattern", "quarterly_high_level_consolidation",
                 "quarterly_large_upper_wick", "monthly_large_upper_wick",
                 "multi_timeframe_wick_risk", "daily_bb_overextended",
-                "fundamental_comment", "ma75_touched", "pullback_zone",
-                "rebound_confirmed"):
+                "fundamental_comment", "ma75_touched", "bb_lower_touched", "pullback_zone",
+                "rebound_confirmed", "psar_bull", "psar_buy_turn", "psar_bar_time"):
         if key in row:
             out[key] = row[key]
     for key in ("cloud_top", "cloud_bottom", "tenkan", "kijun",
@@ -221,7 +219,11 @@ def update_active(metric_rows, now=None):
         code = str(candidate.get("code", ""))
         old_status = candidate.get("status")
         if code in metrics:
+            lower_band_was_touched = candidate.get("bb_lower_touched") is True
             candidate.update(_metrics(metrics[code]))
+            candidate["bb_lower_touched"] = bool(
+                lower_band_was_touched or candidate.get("bb_lower_touched")
+            )
         _refresh_derived(candidate, now)
         if candidate["elapsed_days"] >= TRACKING_DAYS:
             new_status = "監視終了"

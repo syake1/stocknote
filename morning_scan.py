@@ -24,7 +24,7 @@ SEND_MEETING = os.getenv("STOCKNOTE_SEND_MEETING", "0") == "1"
 MEETING_LABEL = os.getenv("STOCKNOTE_MEETING_LABEL", "朝の買い候補").strip() or "朝の買い候補"
 TOP_N = int(os.getenv("STOCKNOTE_TOP_N", "10"))
 MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "0"))
-ENTRY_RULE_VERSION = 4
+ENTRY_RULE_VERSION = 5
 MIN_FUNDAMENTAL_SCORE = float(os.getenv("STOCKNOTE_MIN_FUNDAMENTAL_SCORE", "40"))
 FUNDAMENTAL_POOL = int(os.getenv("STOCKNOTE_FUNDAMENTAL_POOL", "20"))
 
@@ -48,6 +48,12 @@ def touched_ma75_recently(low, ma75, lookback=3):
     """Return True when price reached or broke the 75-day line recently."""
     aligned = pd.concat([low.rename("low"), ma75.rename("ma75")], axis=1).dropna().tail(lookback)
     return bool(not aligned.empty and (aligned["low"] <= aligned["ma75"]).any())
+
+
+def touched_bb_lower_recently(low, lower, lookback=3):
+    """Return True only when the daily low reached the lower Bollinger band."""
+    aligned = pd.concat([low.rename("low"), lower.rename("lower")], axis=1).dropna().tail(lookback)
+    return bool(not aligned.empty and (aligned["low"] <= aligned["lower"]).any())
 
 
 def add_fundamental_judgement(row, fundamentals):
@@ -127,11 +133,12 @@ def score_one(code, name):
     # ボリンジャーバンド逆張りを主軸にする。75日線まで下げていない
     # 高値圏銘柄は、RSIや25日線だけが条件を満たしても候補にしない。
     ma75_touched = bool(low is not None and touched_ma75_recently(low, ma75, lookback=3))
+    bb_lower_touched = bool(low is not None and touched_bb_lower_recently(low, lower, lookback=3))
     ma75_distance_pct = (px / m75 - 1.0) * 100.0
     pullback_zone = bool(
         28.0 <= rv <= 45.0
         and px <= m25
-        and bb_position <= -0.5
+        and bb_lower_touched
         and ma75_touched
         and px <= m75 * 1.05
     )
@@ -154,6 +161,7 @@ def score_one(code, name):
             "reversal":reversal,"lower_wick_reversal":lower_wick_reversal,
             "pullback_zone":pullback_zone,"rebound_confirmed":rebound_confirmed,
             "bb_position":bb_position,"ma75_touched":ma75_touched,
+            "bb_lower_touched":bb_lower_touched,
             "ma75_distance_pct":ma75_distance_pct,
             "ma75_slope":"flat_or_up","ma200_slope":"flat_or_up", **trend}
 

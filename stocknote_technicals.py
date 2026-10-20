@@ -258,6 +258,12 @@ def calculate(code, name, hist):
     m25, m75 = float(ma25.iloc[-1]), float(ma75.iloc[-1])
     blo = float(lower.iloc[-1])
     bb_pos = float((px-m25) / max(float(std.iloc[-1]), 1e-9))
+    recent_bb = pd.concat(
+        [low.rename("low"), lower.rename("lower")], axis=1
+    ).dropna().tail(3)
+    bb_lower_touched = bool(
+        not recent_bb.empty and (recent_bb["low"] <= recent_bb["lower"]).any()
+    )
     score = float(np.clip((55-rv)/30*35, 0, 35))
     score += 25.0 if px <= blo*1.02 else float(np.clip((m25-px)/max(m25-blo,1e-9)*20,0,20))
     score += 12.0 if m25 >= m75 else 4.0
@@ -265,7 +271,8 @@ def calculate(code, name, hist):
     score += float(np.clip(((vr or 1)-0.8)*6, 0, 8))
     return {
         "code": str(code), "name": name or str(code), "price": px,
-        "rsi": rv, "bb_position": bb_pos, "ma5": float(ma5.iloc[-1]),
+        "rsi": rv, "bb_position": bb_pos,
+        "bb_lower_touched": bb_lower_touched, "ma5": float(ma5.iloc[-1]),
         "ma25": m25, "ma75": m75,
         "ma200": float(ma200.iloc[-1]) if pd.notna(ma200.iloc[-1]) else None,
         "macd": float(macd.iloc[-1]), "macd_signal": float(signal.iloc[-1]),

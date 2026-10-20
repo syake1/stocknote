@@ -57,7 +57,7 @@ def candidate_day(candidate, today=None):
 
 def candidate_status(candidate):
     day = candidate_day(candidate)
-    status = candidate.get("status") or "監視中"
+    status = "買いサイン" if candidate.get("psar_buy_turn") else "パラボリック待ち"
     return f"{status}（{day}日目）" if day is not None else status
 
 
