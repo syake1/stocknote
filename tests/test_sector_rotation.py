@@ -3,7 +3,13 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from stocknote_sector_rotation import SECTOR_BASKETS, STOCK_NAMES, analyze_close_prices, classify_rotation
+from stocknote_sector_rotation import (
+    SECTOR_BASKETS,
+    STOCK_NAMES,
+    analyze_close_prices,
+    classify_rotation,
+    rank_rotation_stocks,
+)
 
 
 class SectorRotationTests(unittest.TestCase):
@@ -41,6 +47,23 @@ class SectorRotationTests(unittest.TestCase):
         self.assertIn("1861.T", SECTOR_BASKETS["建設"])
         self.assertEqual("清水建設", STOCK_NAMES["1803"])
         self.assertEqual("熊谷組", STOCK_NAMES["1861"])
+
+    def test_rotation_stock_ranking_keeps_signal_separate(self):
+        sectors = [{
+            "業種・テーマ": "小売・内需",
+            "判定": "循環買い",
+            "5日%": 2.0,
+            "資金流入点": 3.0,
+            "銘柄候補": [
+                {"コード": "8267", "銘柄名": "イオン", "現在値": 2500,
+                 "1日%": 1.0, "5日%": 4.0, "20日%": 6.0, "20日線上": True},
+                {"コード": "3099", "銘柄名": "三越伊勢丹HD", "現在値": 2200,
+                 "1日%": -3.0, "5日%": 3.0, "20日%": 4.0, "20日線上": True},
+            ],
+        }]
+        ranked = rank_rotation_stocks(sectors, market_score=30)
+        self.assertEqual(["8267"], [row["コード"] for row in ranked])
+        self.assertEqual("地合い逆風・監視優先", ranked[0]["扱い"])
 
 
 if __name__ == "__main__":
