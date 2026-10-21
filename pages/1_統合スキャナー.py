@@ -10,6 +10,16 @@ import yfinance as yf
 
 from stocknote_detail import render_extended_detail
 from stocknote_candidate_view import candidate_status, price_change, render_candidate_table, signed_change
+from stocknote_decline_counter import (
+    PRICE_LABELS,
+    calculate_decline_count,
+    completed_daily_history,
+    decline_summary,
+    signal_event_records,
+    strategy_trade_records,
+    summarize_signal_events,
+    summarize_strategy_trades,
+)
 from stocknote_fundamentals import get_fundamentals
 from stocknote_universe import delete_universe as delete_saved_universe
 from stocknote_universe import load_universe as load_saved_universe
@@ -29,8 +39,26 @@ st.title("🧭 Stocknote 統合スキャナー")
 st.caption("保存したSBI CSVを母集団に、テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
 st.success("✅ 逆張り新条件 v4：75日線接触＋BB下限到達＋反転確認")
 
-SCANNER_RULE_VERSION = 5
+SCANNER_RULE_VERSION = 6
 ENTRY_RULE_VERSION = 5
+
+with st.sidebar:
+    st.markdown("### 下げ日数カウンター")
+    decline_signal_count = st.slider("買いシグナルの本数", 5, 30, 10, 1)
+    decline_add_count = st.slider("追加買いの本数", 10, 60, 20, 1)
+    decline_compare_bars = st.slider("比較する足の本数", 1, 10, 2, 1)
+    decline_price_label = st.selectbox("判定に使う価格", list(PRICE_LABELS), index=0)
+    decline_candidate_range = st.slider(
+        "買い候補に表示する範囲",
+        1,
+        60,
+        (decline_signal_count, max(decline_signal_count, decline_add_count - 1)),
+    )
+    if decline_add_count <= decline_signal_count:
+        st.warning("追加買いの本数は買いシグナルより大きくしてください。")
+    st.caption("日足の確定後だけ更新します。証券会社への注文は送りません。")
+
+decline_price_column = PRICE_LABELS[decline_price_label]
 
 st.markdown("## 📌 現在監視中の候補")
 stored_active_candidates = load_active()
@@ -201,13 +229,66 @@ def one_download(code, period="5y", interval="1d"):
         return pd.DataFrame()
 
 
-def technical_scores(code, name, hist):
+def technical_scores(
+    code,
+    name,
+    hist,
+    decline_signal_count=10,
+    decline_add_count=20,
+    decline_compare_bars=2,
+    decline_price_column="Close",
+):
     if hist is None or hist.empty or "Close" not in hist.columns:
         return {"コード": code, "銘柄名": name or code, "error": "株価データなし"}
     hist = hist.copy()
     close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
     if len(close) < 80:
         return {"コード": code, "銘柄名": name or code, "error": "履歴不足"}
+
+    completed_history = completed_daily_history(hist)
+    counted_history = calculate_decline_count(
+        completed_history,
+        signal_count=decline_signal_count,
+        add_count=decline_add_count,
+        compare_bars=decline_compare_bars,
+        price_column=decline_price_column,
+    )
+    count_summary = decline_summary(
+        counted_history,
+        signal_count=decline_signal_count,
+        add_count=decline_add_count,
+    )
+    count_events = signal_event_records(counted_history, thresholds=(8, 10, 12, 15), horizon=5)
+    single_buy_trades = strategy_trade_records(
+        counted_history,
+        signal_count=decline_signal_count,
+        add_count=decline_add_count,
+        include_add=False,
+    )
+    added_buy_trades = strategy_trade_records(
+        counted_history,
+        signal_count=decline_signal_count,
+        add_count=decline_add_count,
+        include_add=True,
+    )
+    recent_count_rows = []
+    for bar_time, bar in counted_history.tail(40).iterrows():
+        event = ""
+        if bool(bar["買い到達"]):
+            event = f"買い{decline_signal_count}本"
+        elif bool(bar["追加買い到達"]):
+            event = f"追加{decline_add_count}本"
+        elif bool(bar["リセット"]):
+            event = "リセット"
+        elif bool(bar["数え直し開始"]):
+            event = "1本目"
+        recent_count_rows.append({
+            "日付": pd.Timestamp(bar_time).strftime("%Y/%m/%d"),
+            "終値": float(bar["Close"]),
+            "判定価格": float(bar[decline_price_column]),
+            "下げ日数": int(bar["下げ日数"]),
+            "判定": event,
+        })
 
     rsi = rsi14(close)
     ma5 = close.rolling(5).mean()
@@ -327,6 +408,26 @@ def technical_scores(code, name, hist):
         "買いスコア": buy_score, "空売りスコア": short_score,
         "買い対象": buy_eligible, "押し目条件": pullback_zone,
         "買いサイン": buy_signal,
+        "下げ日数": count_summary["current_count"],
+        "下げ判定日": (
+            count_summary["asof"].strftime("%Y/%m/%d")
+            if count_summary["asof"] is not None else None
+        ),
+        "下げ買い到達日": (
+            count_summary["signal_date"].strftime("%Y/%m/%d")
+            if count_summary["signal_date"] is not None else None
+        ),
+        "下げ追加到達日": (
+            count_summary["add_date"].strftime("%Y/%m/%d")
+            if count_summary["add_date"] is not None else None
+        ),
+        "下げ買い本日到達": count_summary["signal_today"],
+        "下げ追加本日到達": count_summary["add_today"],
+        "下げ判定価格": decline_price_column,
+        "_下げカウント推移": recent_count_rows,
+        "_下げバックテスト": count_events,
+        "_下げ単独買い取引": single_buy_trades,
+        "_下げ追加買い取引": added_buy_trades,
         "5日線上抜け": ma5_cross_up,
         "5日線乖離%": (px / m5 - 1) * 100,
         "5日線判定日": str(close.index[-1]),
@@ -366,7 +467,13 @@ def technical_scores(code, name, hist):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def scan_items(items):
+def scan_items(
+    items,
+    decline_signal_count=10,
+    decline_add_count=20,
+    decline_compare_bars=2,
+    decline_price_column="Close",
+):
     items = [(normalize_code(c), str(n or "")) for c, n in items]
     items = [(c, n) for c, n in items if c]
     results = []
@@ -383,7 +490,15 @@ def scan_items(items):
             if frame.empty or "Close" not in frame.columns:
                 frame = one_download(code)
             try:
-                results.append(technical_scores(code, name, frame))
+                results.append(technical_scores(
+                    code,
+                    name,
+                    frame,
+                    decline_signal_count,
+                    decline_add_count,
+                    decline_compare_bars,
+                    decline_price_column,
+                ))
             except Exception as exc:
                 results.append({"コード": code, "銘柄名": name or code, "error": f"分析エラー: {exc}"})
     return results
@@ -660,6 +775,15 @@ if st.session_state.get("scanner_rule_version") != SCANNER_RULE_VERSION:
     st.session_state.scan_results = None
     st.session_state.scanner_rule_version = SCANNER_RULE_VERSION
     scan_items.clear()
+decline_setting_signature = (
+    decline_signal_count,
+    decline_add_count,
+    decline_compare_bars,
+    decline_price_column,
+)
+if st.session_state.get("decline_setting_signature") != decline_setting_signature:
+    st.session_state.scan_results = None
+    st.session_state.decline_setting_signature = decline_setting_signature
 if "universe" not in st.session_state:
     saved, meta = load_saved_universe()
     st.session_state.universe = saved
@@ -708,7 +832,13 @@ if u is not None and not u.empty:
                 scan_items.clear()
                 fundamental_employee.clear()
                 market_employee_score.clear()
-            st.session_state.scan_results = scan_items(items)
+            st.session_state.scan_results = scan_items(
+                items,
+                decline_signal_count,
+                decline_add_count,
+                decline_compare_bars,
+                decline_price_column,
+            )
             performed_scan = True
 
 if st.session_state.scan_results is not None:
@@ -732,6 +862,57 @@ if st.session_state.scan_results is not None:
             if forecast_per is not None and forecast_per > 25 and r.get("買い対象"):
                 r["買い対象"] = False
                 r["トレンド判定"] = "予想PER25倍超（買いは監視のみ）"
+            r.setdefault("下げ日数", 0)
+            r.setdefault("下げ判定日", None)
+            r.setdefault("下げ買い到達日", None)
+            r.setdefault("下げ追加到達日", None)
+            r.setdefault("下げ買い本日到達", False)
+            r.setdefault("下げ追加本日到達", False)
+            r.setdefault("_下げカウント推移", [])
+            r.setdefault("_下げバックテスト", [])
+            r.setdefault("_下げ単独買い取引", [])
+            r.setdefault("_下げ追加買い取引", [])
+
+            count = int(r.get("下げ日数") or 0)
+            if count == decline_add_count:
+                count_status = f"追加買い{decline_add_count}本到達"
+            elif count > decline_add_count:
+                count_status = "追加買い到達後"
+            elif count == decline_signal_count:
+                count_status = f"買い{decline_signal_count}本到達"
+            elif decline_signal_count < count < decline_add_count:
+                count_status = "買い候補継続"
+            else:
+                count_status = "到達待ち"
+            r["下げカウント状態"] = count_status
+
+        count_min, count_max = decline_candidate_range
+        decline_candidates = sorted(
+            [r for r in ok if count_min <= int(r.get("下げ日数") or 0) <= count_max],
+            key=lambda row: (
+                not bool(row.get("下げ買い本日到達")),
+                int(row.get("下げ日数") or 0),
+                str(row.get("コード", "")),
+            ),
+        )
+        decline_add_candidates = sorted(
+            [r for r in ok if int(r.get("下げ日数") or 0) >= decline_add_count],
+            key=lambda row: (-int(row.get("下げ日数") or 0), str(row.get("コード", ""))),
+        )
+        decline_backtest_events = []
+        decline_single_trades = []
+        decline_added_trades = []
+        for r in ok:
+            identity = {"コード": r["コード"], "銘柄名": r["銘柄名"]}
+            decline_backtest_events.extend(
+                [{**identity, **event} for event in r.get("_下げバックテスト", [])]
+            )
+            decline_single_trades.extend(
+                [{**identity, **trade} for trade in r.get("_下げ単独買い取引", [])]
+            )
+            decline_added_trades.extend(
+                [{**identity, **trade} for trade in r.get("_下げ追加買い取引", [])]
+            )
         buy_pre = [r for r in ok if r.get("買い対象")]
         with st.spinner("逆張り候補のファンダメンタルを確認中…"):
             for r in buy_pre:
@@ -809,10 +990,97 @@ if st.session_state.scan_results is not None:
         short.sort(key=lambda x: x["空売り総合評価"], reverse=True)
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
 
-        tab_buy, tab_rotation, tab_short, tab_meeting = st.tabs(
-            ["📈 買いサイン", "🔁 循環セクター候補", "📉 空売り候補", "👥 AI社員会議"]
+        tab_buy, tab_rotation, tab_short, tab_meeting, tab_decline_bt = st.tabs(
+            ["📈 買いサイン", "🔁 循環セクター候補", "📉 空売り候補", "👥 AI社員会議", "下げ日数バックテスト"]
         )
         with tab_buy:
+            st.subheader(f"下げ日数カウンター買い候補（{count_min}〜{count_max}本目）")
+            st.caption(
+                f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
+                "その後に最初の前日比安となった日を1本目として数えます。"
+            )
+            if decline_candidates:
+                count_rows = []
+                for row in decline_candidates:
+                    count_rows.append({
+                        "コード": row["コード"],
+                        "銘柄名": row["銘柄名"],
+                        "現在カウント": int(row["下げ日数"]),
+                        "状態": row["下げカウント状態"],
+                        "判定日": row["下げ判定日"],
+                        f"{decline_signal_count}本到達日": row["下げ買い到達日"],
+                        f"{decline_add_count}本到達日": row["下げ追加到達日"],
+                        "現在値": row["現在値"],
+                        "RSI14": row["RSI14"],
+                        "5日線上抜け": row["5日線上抜け"],
+                        "パラボリック": row["パラボリック判定"],
+                    })
+                st.dataframe(
+                    pd.DataFrame(count_rows),
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
+                        "RSI14": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                )
+                reached_today = sum(bool(row["下げ買い本日到達"]) for row in decline_candidates)
+                st.success(
+                    f"表示範囲に{len(decline_candidates)}銘柄。"
+                    f"本日{decline_signal_count}本へ到達した銘柄は{reached_today}件です。"
+                )
+            else:
+                st.info(f"現在、{count_min}〜{count_max}本目の銘柄はありません。")
+
+            if decline_add_candidates:
+                with st.expander(f"追加買いの目安（{decline_add_count}本以上・{len(decline_add_candidates)}件）"):
+                    st.dataframe(
+                        pd.DataFrame(decline_add_candidates)[
+                            ["コード", "銘柄名", "下げ日数", "下げカウント状態", "下げ判定日", "下げ追加到達日", "現在値", "RSI14"]
+                        ],
+                        hide_index=True,
+                        width="stretch",
+                    )
+
+            progression_source = decline_candidates or sorted(
+                ok,
+                key=lambda row: int(row.get("下げ日数") or 0),
+                reverse=True,
+            )[:3]
+            if progression_source:
+                progression_by_label = {
+                    f"{row['コード']} {row['銘柄名']}": row for row in progression_source[:20]
+                }
+                default_progression = list(progression_by_label)[: min(3, len(progression_by_label))]
+                selected_progression = st.multiselect(
+                    "カウント推移を確認する銘柄（最大3銘柄）",
+                    list(progression_by_label),
+                    default=default_progression,
+                    max_selections=3,
+                    key="decline_progression_symbols",
+                )
+                if selected_progression:
+                    progression_frames = []
+                    for label in selected_progression:
+                        row = progression_by_label[label]
+                        frame = pd.DataFrame(row.get("_下げカウント推移", [])).copy()
+                        if not frame.empty:
+                            frame.insert(0, "銘柄", label)
+                            progression_frames.append(frame)
+                    if progression_frames:
+                        with st.expander("テスト確認用：直近40日足のカウント推移", expanded=True):
+                            st.dataframe(
+                                pd.concat(progression_frames, ignore_index=True),
+                                hide_index=True,
+                                width="stretch",
+                                column_config={
+                                    "終値": st.column_config.NumberColumn(format="¥%,.1f"),
+                                    "判定価格": st.column_config.NumberColumn(format="¥%,.1f"),
+                                },
+                            )
+
+            st.warning("カウント到達は統計上の候補表示です。自動注文は行いません。")
+            st.markdown("---")
             st.subheader("5日線上抜け買いサイン")
             st.success("逆張り条件を満たし、終値が5日線を下から上抜けた銘柄を表示します。パラボリックは参考表示です。")
             st.caption("総合買い評価は逆張り80%・ファンダ20%。75日線から5%以上高い銘柄は除外します。")
@@ -925,6 +1193,69 @@ if st.session_state.scan_results is not None:
                                  hide_index=True, use_container_width=True)
                 else:
                     st.info("信用売り会議の対象はありません。")
+
+        with tab_decline_bt:
+            st.subheader("下げ日数カウンターのバックテスト")
+            st.caption(
+                "各シグナル日の終値で仮想購入し、5営業日以内に一度でも終値が上回った割合と、"
+                "5営業日目の勝率・平均損益・期間中の最大ドローダウンを比較します。"
+            )
+            signal_summary = summarize_signal_events(
+                decline_backtest_events,
+                thresholds=(8, 10, 12, 15),
+            )
+            st.dataframe(
+                signal_summary,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "5日以内上昇率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "平均損益%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "最大ドローダウン%": st.column_config.NumberColumn(format="%+.2f%%"),
+                },
+            )
+
+            st.markdown("#### 買いのみ・追加買いありの比較")
+            strategy_summary = pd.DataFrame([
+                summarize_strategy_trades(
+                    decline_single_trades,
+                    f"{decline_signal_count}本目で1回買い",
+                ),
+                summarize_strategy_trades(
+                    decline_added_trades,
+                    f"{decline_signal_count}本目＋{decline_add_count}本目で同額追加",
+                ),
+            ])
+            st.dataframe(
+                strategy_summary,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                    "平均損益%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "最大ドローダウン%": st.column_config.NumberColumn(format="%+.2f%%"),
+                },
+            )
+            st.caption(
+                "追加買い比較は同じ株数を追加し、カウントが0へリセットした日の終値で手仕舞う仮定です。"
+                "手数料・税金・スリッページは含みません。"
+            )
+            if decline_backtest_events:
+                with st.expander("バックテスト対象シグナルを確認"):
+                    event_table = pd.DataFrame(decline_backtest_events).rename(columns={
+                        "threshold": "本数",
+                        "signal_date": "シグナル日",
+                        "entry_price": "買値",
+                        "within_horizon_up": "5日以内上昇",
+                        "final_return_pct": "5日損益%",
+                        "max_drawdown_pct": "最大DD%",
+                    })
+                    st.dataframe(
+                        event_table[["コード", "銘柄名", "本数", "シグナル日", "買値", "5日以内上昇", "5日損益%", "最大DD%"]],
+                        hide_index=True,
+                        width="stretch",
+                    )
 
     if bad:
         with st.expander(f"⚠️ 分析できなかった銘柄（{len(bad)}件）"):
