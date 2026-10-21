@@ -482,7 +482,7 @@ def scan_items(
         tickers = [f"{c}.T" for c, _ in batch]
         try:
             data = yf.download(tickers, period="5y", group_by="ticker",
-                               auto_adjust=False, progress=False, threads=True)
+                               auto_adjust=False, progress=False, threads=4)
         except Exception:
             data = pd.DataFrame()
         for code, name in batch:
