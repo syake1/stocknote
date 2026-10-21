@@ -16,6 +16,14 @@ PRICE_LABELS = {
     "安値": "Low",
 }
 
+# 数え始めの起点モード
+START_MODE_RESET = "reset"        # 上がったあと最初に出た陰線から数える(従来)
+START_MODE_BB_UPPER = "bb_upper"  # BB上限タッチ後の最初の陰線から数える
+START_MODE_LABELS = {
+    "上がったあと最初の陰線から(従来)": START_MODE_RESET,
+    "BB上限タッチ後の最初の陰線から": START_MODE_BB_UPPER,
+}
+
 
 def completed_daily_history(
     history: pd.DataFrame,
@@ -56,19 +64,50 @@ def completed_daily_history(
     return data
 
 
+def bollinger_upper_touch(
+    data: pd.DataFrame,
+    window: int = 20,
+    sigma: float = 2.0,
+) -> tuple[pd.Series, pd.Series]:
+    """Return (upper band, touched flag). Touch means High (or Close) >= upper band."""
+    close = pd.to_numeric(data["Close"], errors="coerce")
+    mean = close.rolling(window, min_periods=window).mean()
+    std = close.rolling(window, min_periods=window).std(ddof=0)
+    upper = mean + sigma * std
+    if "High" in data.columns:
+        high = pd.to_numeric(data["High"], errors="coerce")
+    else:
+        high = close
+    touched = (high >= upper) & upper.notna()
+    return upper, touched
+
+
 def calculate_decline_count(
     history: pd.DataFrame,
     signal_count: int = 10,
     add_count: int = 20,
     compare_bars: int = 2,
     price_column: str = "Close",
+    start_mode: str = START_MODE_RESET,
+    bb_window: int = 20,
+    bb_sigma: float = 2.0,
 ) -> pd.DataFrame:
     """Calculate the reset-aware decline count on completed daily bars.
 
     A reset (selected price above the selected price ``compare_bars`` ago)
-    always takes precedence. After a reset, the first close below the previous
-    close starts a new count at one. While counting, every completed bar adds
-    one until the next reset.
+    always takes precedence while counting.
+
+    start_mode == "reset" (default):
+        After a reset, the first close below the previous close starts a new
+        count at one.
+
+    start_mode == "bb_upper":
+        The count starts only after the Bollinger upper band has been touched.
+        The first close below the previous close on or after the touch day
+        starts the count at one. A reset clears the count and requires a new
+        upper-band touch before counting again.
+
+    While counting, every completed bar adds one until the next reset.
     """
     if signal_count < 1:
         raise ValueError("買いシグナルの本数は1以上にしてください")
@@ -76,6 +115,8 @@ def calculate_decline_count(
         raise ValueError("追加買いの本数は1以上にしてください")
     if compare_bars < 1:
         raise ValueError("比較する足の本数は1以上にしてください")
+    if start_mode not in (START_MODE_RESET, START_MODE_BB_UPPER):
+        raise ValueError("数え始めのモードが正しくありません")
     if history is None or history.empty:
         return pd.DataFrame()
     if "Close" not in history.columns:
@@ -92,28 +133,57 @@ def calculate_decline_count(
 
     close = data["Close"]
     comparison_price = data[price_column]
+
+    use_bb = start_mode == START_MODE_BB_UPPER
+    if use_bb:
+        upper, touched_series = bollinger_upper_touch(data, bb_window, bb_sigma)
+        data["BB上限"] = upper
+        data["BB上限タッチ"] = touched_series
+        touched_values = touched_series.to_numpy()
+    else:
+        touched_values = None
+
     counts: list[int] = []
     resets: list[bool] = []
     restarts: list[bool] = []
     count = 0
+    armed = False  # bb_upper モード: タッチ済みで陰線待ち
 
     for position in range(len(data)):
         reset = False
         restart = False
+        touched = bool(touched_values[position]) if use_bb else False
+
         if position >= compare_bars:
             reset = bool(
                 comparison_price.iloc[position]
                 > comparison_price.iloc[position - compare_bars]
             )
 
-        if reset:
-            count = 0
-        elif position >= compare_bars:
-            if count > 0:
-                count += 1
-            elif close.iloc[position] < close.iloc[position - 1]:
-                count = 1
-                restart = True
+            if use_bb:
+                if count > 0:
+                    if reset:
+                        count = 0
+                        armed = touched
+                    else:
+                        count += 1
+                else:
+                    if touched:
+                        armed = True
+                    if armed and close.iloc[position] < close.iloc[position - 1]:
+                        count = 1
+                        restart = True
+                        armed = False
+            else:
+                if reset:
+                    count = 0
+                elif count > 0:
+                    count += 1
+                elif close.iloc[position] < close.iloc[position - 1]:
+                    count = 1
+                    restart = True
+        elif use_bb and touched:
+            armed = True
 
         counts.append(count)
         resets.append(reset)
