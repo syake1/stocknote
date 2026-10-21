@@ -328,6 +328,10 @@ if sector_rows:
                 ranked_df["業種判定"] = (
                     ranked_df["業種・テーマ"].map(sector_states).fillna("循環買い")
                 )
+            if "5日線上抜け" not in ranked_df.columns:
+                ranked_df["5日線上抜け"] = False
+            if "5日線乖離%" not in ranked_df.columns:
+                ranked_df["5日線乖離%"] = float("nan")
             ranked_df.insert(0, "順位", range(1, len(ranked_df) + 1))
             st.dataframe(
                 ranked_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "扱い", "5日線上抜け", "5日線乖離%", "循環点", "現在値", "1日%", "5日%", "20日%"]],
