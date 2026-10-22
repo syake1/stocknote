@@ -26,7 +26,7 @@ def test_accelerating_repeat_is_morning_candidate():
     }]
     result = analyze_rotation_patterns([candidate(3.0)], history, 55, "2026-10-21")[0]
     assert result["初動加速"] is True
-    assert result["翌朝の扱い"] == "翌朝の成行検討（手動確認）"
+    assert result["翌朝の扱い"] == "先回り監視（5日線上抜け待ち）"
 
 
 def test_risk_off_never_labels_market_order_candidate():
@@ -43,3 +43,18 @@ def test_ma5_cross_is_an_early_signal_without_previous_ranking():
     result = analyze_rotation_patterns([candidate(3.0, ma5_cross=True)], [], 55, "2026-10-21")[0]
     assert result["初動加速"] is True
     assert result["初動理由"] == "5日線上抜け"
+
+
+def test_fresh_sector_near_ma5_is_ranked_before_cross():
+    item = candidate(-0.5)
+    item.update({
+        "業種判定": "循環初動",
+        "1日%": 0.4,
+        "20日%": -2.0,
+        "5日線乖離%": -0.6,
+        "初動段階": "上抜け前",
+    })
+    result = analyze_rotation_patterns([item], [], 55, "2026-10-21")[0]
+    assert result["初動加速"] is True
+    assert result["初動理由"] == "業種初動＋5日線付近"
+    assert result["翌朝の扱い"] == "先回り監視（5日線上抜け待ち）"

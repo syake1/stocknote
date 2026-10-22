@@ -21,8 +21,20 @@ class SectorRotationTests(unittest.TestCase):
 
     def test_one_day_breadth_detects_rotation_earlier(self):
         self.assertEqual(
-            ("循環初動", "先行監視"),
+            ("循環初動", "先回り監視"),
             classify_rotation(0.8, 0.4, -1.0, 50.0, 40.0, 75.0),
+        )
+
+    def test_modest_acceleration_is_detected_before_large_rise(self):
+        self.assertEqual(
+            ("循環初動", "先回り監視"),
+            classify_rotation(0.25, -0.4, -2.0, 50.0, 50.0, 50.0),
+        )
+
+    def test_extended_sector_is_not_a_fresh_rotation_buy(self):
+        self.assertEqual(
+            ("上昇後・過熱", "追わない"),
+            classify_rotation(1.0, 6.5, 11.0, 80.0, 100.0, 75.0),
         )
 
     def test_weak_sector_is_not_a_buy(self):
@@ -91,6 +103,35 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual("8267", ranked[0]["コード"])
         self.assertEqual("循環初動", ranked[0]["業種判定"])
         self.assertEqual("循環初動・5日線上抜け", ranked[0]["扱い"])
+
+    def test_early_rotation_keeps_stock_near_ma5_before_cross(self):
+        sectors = [{
+            "業種・テーマ": "小売・内需",
+            "判定": "循環初動",
+            "5日%": -0.5,
+            "資金流入点": 1.0,
+            "銘柄候補": [{
+                "コード": "3382", "銘柄名": "セブン＆アイ", "現在値": 2100,
+                "1日%": 0.4, "5日%": -0.6, "20日%": -3.0,
+                "20日線上": False, "5日線上抜け": False, "5日線乖離%": -0.7,
+            }],
+        }]
+        ranked = rank_rotation_stocks(sectors, market_score=55)
+        self.assertEqual("3382", ranked[0]["コード"])
+        self.assertEqual("上抜け前", ranked[0]["初動段階"])
+        self.assertEqual("先回り監視・5日線付近", ranked[0]["扱い"])
+
+    def test_overheated_stock_is_removed_from_rotation_candidates(self):
+        sectors = [{
+            "業種・テーマ": "半導体", "判定": "循環買い", "5日%": 3.0,
+            "資金流入点": 4.0,
+            "銘柄候補": [{
+                "コード": "8035", "銘柄名": "東京エレクトロン", "現在値": 30000,
+                "1日%": 2.0, "5日%": 8.0, "20日%": 16.0,
+                "20日線上": True, "5日線上抜け": False, "5日線乖離%": 4.0,
+            }],
+        }]
+        self.assertEqual([], rank_rotation_stocks(sectors, market_score=55))
 
 
 if __name__ == "__main__":
