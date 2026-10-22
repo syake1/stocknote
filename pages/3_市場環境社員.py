@@ -248,11 +248,12 @@ if sector_rows:
             )
     rotation_early = [row for row in sector_rows if row["判定"] == "循環初動"]
     rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
+    rotation_overheated = [row for row in sector_rows if row["判定"] == "上昇後・過熱"]
     rotation_active = [
         row for row in sector_rows if row["判定"] in {"循環初動", "循環買い"}
     ]
     rotation_stocks = rank_rotation_stocks(sector_rows, view["score"])
-    strongest = sector_rows[:3]
+    early_top = sector_rows[:3]
     asof = pd.Timestamp(sector_date).strftime("%Y/%m/%d") if sector_date is not None else "最新日足"
 
     st.markdown("### 業種から銘柄チャートを見る")
@@ -305,20 +306,23 @@ if sector_rows:
                         y_label="株価（円）",
                     )
 
-    st.markdown("### 本日の買い候補セクター")
+    st.markdown("### 本日の循環初動（早い順）")
     if rotation_active:
         if rotation_early:
             names = "、".join(row["業種・テーマ"] for row in rotation_early)
-            st.success(f"先行監視（循環初動）：{names}")
+            st.success(f"最優先・先回り監視（循環初動）：{names}")
         if rotation_buys:
             names = "、".join(row["業種・テーマ"] for row in rotation_buys)
             st.success(f"買い候補（循環買い）：{names}")
+        if rotation_overheated:
+            names = "、".join(row["業種・テーマ"] for row in rotation_overheated)
+            st.warning(f"上昇後のため追わない：{names}")
 
         st.markdown("#### 本日の循環セクター銘柄")
         if view["score"] <= 38:
             st.warning("地合いはリスクオフです。下表は買いサインではなく監視優先です。")
         else:
-            st.info("『循環初動』は当日の広がりを先に検出します。個別銘柄の5日線上抜けを初動サインにし、パラボリックは参考表示だけにします。")
+            st.info("『循環初動』を最上位に表示します。5日線上抜けは初動確認、5日線付近は上抜け前の先回り監視です。パラボリックは参考表示だけにします。")
         if rotation_stocks:
             ranked_df = pd.DataFrame(rotation_stocks)
             if "業種判定" not in ranked_df.columns:
@@ -332,9 +336,15 @@ if sector_rows:
                 ranked_df["5日線上抜け"] = False
             if "5日線乖離%" not in ranked_df.columns:
                 ranked_df["5日線乖離%"] = float("nan")
+            if "初動段階" not in ranked_df.columns:
+                ranked_df["初動段階"] = "条件待ち"
+            if "過熱判定" not in ranked_df.columns:
+                ranked_df["過熱判定"] = "未過熱"
+            if "1日加速pt" not in ranked_df.columns:
+                ranked_df["1日加速pt"] = float("nan")
             ranked_df.insert(0, "順位", range(1, len(ranked_df) + 1))
             st.dataframe(
-                ranked_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "扱い", "5日線上抜け", "5日線乖離%", "循環点", "現在値", "1日%", "5日%", "20日%"]],
+                ranked_df[["順位", "初動段階", "業種・テーマ", "業種判定", "コード", "銘柄名", "扱い", "過熱判定", "5日線上抜け", "5日線乖離%", "1日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
                 hide_index=True,
                 width="stretch",
                 column_config={
@@ -344,6 +354,7 @@ if sector_rows:
                     "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
                     "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
                     "5日線乖離%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "1日加速pt": st.column_config.NumberColumn(format="%+.2f"),
                 },
             )
         else:
@@ -355,7 +366,7 @@ if sector_rows:
             [row["業種・テーマ"] for row in rotation_active],
         )
         selected_row = next(row for row in rotation_active if row["業種・テーマ"] == selected_sector)
-        stock_options = selected_row.get("銘柄候補", [])
+        stock_options = rank_rotation_stocks([selected_row], view["score"], limit=20)
         if stock_options:
             selected_code = st.selectbox(
                 "登録する代表銘柄",
@@ -385,17 +396,18 @@ if sector_rows:
         st.info("本日は『循環初動』『循環買い』の条件を満たす業種はありません。無理に業種買いをしない判定です。")
     st.caption(f"判定日：{asof}。代表銘柄の等ウェイト平均で、短期資金の向きを毎日判定しています。")
 
+    st.markdown("#### 業種の初動順位")
     top_cols = st.columns(3)
-    for column, row in zip(top_cols, strongest):
+    for column, row in zip(top_cols, early_top):
         column.metric(
             row["業種・テーマ"],
             row["判定"],
-            f"5日 {row['5日%']:+.2f}%",
+            f"初動点 {row.get('初動点', 0):.1f} / 1日加速 {row.get('1日加速pt', 0):+.2f}",
         )
 
     sector_df = pd.DataFrame(sector_rows)
     display_columns = [
-        "業種・テーマ", "判定", "売買目安", "1日%", "5日%", "20日%",
+        "業種・テーマ", "判定", "売買目安", "初動点", "1日加速pt", "1日%", "5日%", "20日%",
         "1日上昇銘柄%", "5日上昇銘柄%", "20日線上銘柄%", "取得銘柄数",
     ]
     st.dataframe(
@@ -406,6 +418,8 @@ if sector_rows:
             "1日%": st.column_config.NumberColumn(format="%+.2f%%"),
             "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
             "20日%": st.column_config.NumberColumn(format="%+.2f%%"),
+            "初動点": st.column_config.NumberColumn(format="%.1f"),
+            "1日加速pt": st.column_config.NumberColumn(format="%+.2f"),
             "1日上昇銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
             "5日上昇銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
             "20日線上銘柄%": st.column_config.NumberColumn(format="%.0f%%"),
@@ -415,7 +429,7 @@ if sector_rows:
         sector_df.set_index("業種・テーマ")[["5日%"]],
         horizontal=True,
     )
-    st.caption("循環初動＝当日+0.6%以上、業種内の当日上昇銘柄60%以上で、5日上昇がまだ完成前の業種。循環買い＝1日・5日が上向き、5日上昇銘柄60%以上。上昇継続は追い掛けず押し目待ちです。")
+    st.caption("循環初動＝当日+0.15%以上、業種内の半数以上が上昇し、直近4日の平均ペースより当日が加速、かつ5日・20日で未過熱の業種。循環初動を最上位にし、5日+6%以上または20日+12%以上は『上昇後・過熱』として追いません。")
 else:
     st.warning("業種別データを取得できませんでした。世界市場の判定だけを表示しています。")
 

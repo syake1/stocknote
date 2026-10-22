@@ -1212,22 +1212,24 @@ if st.session_state.scan_results is not None:
 
         with tab_rotation:
             st.subheader("本日の循環セクター銘柄")
-            st.caption("当日の業種内上昇率で『循環初動』を先に拾い、5日線上抜けを銘柄の初動サインにします。パラボリックは参考表示だけです。")
+            st.caption("順位改善・当日の加速・業種内の広がりから『循環初動』を最上位にします。5日線上抜けは初動確認、5日線付近は上抜け前の先回り監視です。")
             st.warning("朝の成行は自動発注しません。SBIの寄り付き気配が前日終値より3%以上高い場合は、飛びつかず見送り判定です。")
             if market_score <= 38:
                 st.warning("地合いはリスクオフです。候補は表示しますが『監視優先』で、買いサインにはしません。")
             if rotation_patterns:
                 early_count = sum(bool(row["初動加速"]) for row in rotation_patterns)
                 if early_count:
-                    st.success(f"連続上位から上昇が加速し始めた候補：{early_count}銘柄")
+                    st.success(f"循環初動・順位改善・5日線付近を先に拾った候補：{early_count}銘柄")
                 else:
-                    st.info("本日は、連続上位かつ上昇加速の条件がそろった銘柄はありません。")
+                    st.info("本日は、未過熱の循環初動条件がそろった銘柄はありません。")
                 rotation_df = pd.DataFrame(rotation_patterns)
                 # A running Streamlit process may briefly retain rows made
                 # before the early-rotation and MA5 columns were introduced.
                 cached_defaults = {
                     "業種判定": "循環買い",
                     "初動理由": "条件待ち",
+                    "初動段階": "条件待ち",
+                    "過熱判定": "未過熱",
                     "5日線上抜け": False,
                     "5日線乖離%": np.nan,
                 }
@@ -1236,7 +1238,7 @@ if st.session_state.scan_results is not None:
                         rotation_df[column] = default
                 rotation_df.insert(0, "順位", range(1, len(rotation_df) + 1))
                 st.dataframe(
-                    rotation_df[["順位", "業種・テーマ", "業種判定", "コード", "銘柄名", "初動理由", "翌朝の扱い", "5日線上抜け", "5日線乖離%", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
+                    rotation_df[["順位", "初動段階", "業種・テーマ", "業種判定", "コード", "銘柄名", "初動理由", "翌朝の扱い", "過熱判定", "5日線上抜け", "5日線乖離%", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
                     hide_index=True,
                     width="stretch",
                     column_config={
@@ -1271,7 +1273,7 @@ if st.session_state.scan_results is not None:
                         )
                 st.page_link("pages/3_市場環境社員.py", label="業種全体と買い候補登録を確認")
             else:
-                st.info("本日は、循環買い業種と個別銘柄の強さがそろった候補はありません。")
+                st.info("本日は、循環初動・循環買いの中に未過熱の個別候補はありません。")
 
         with tab_short:
             st.subheader("信用売り総合ランキング")
