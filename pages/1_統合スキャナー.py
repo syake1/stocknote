@@ -12,9 +12,6 @@ from stocknote_detail import render_extended_detail
 from stocknote_candidate_view import candidate_status, price_change, render_candidate_table, signed_change
 from stocknote_decline_counter import (
     PRICE_LABELS,
-    START_MODE_BB_UPPER,
-    START_MODE_LABELS,
-    START_MODE_RESET,
     calculate_decline_count,
     completed_daily_history,
     decline_summary,
@@ -47,13 +44,6 @@ ENTRY_RULE_VERSION = 5
 
 with st.sidebar:
     st.markdown("### 下げ日数カウンター")
-    decline_start_label = st.selectbox(
-        "数え始めの起点",
-        list(START_MODE_LABELS),
-        index=0,
-        help="BB上限モードは、ボリンジャーバンド(20日・2σ)の上限に高値が触れたあと、最初の陰線から数えます。",
-    )
-    decline_start_mode = START_MODE_LABELS[decline_start_label]
     decline_signal_count = st.slider("買いシグナルの本数", 5, 30, 10, 1)
     decline_add_count = st.slider("追加買いの本数", 10, 60, 20, 1)
     decline_compare_bars = st.slider("比較する足の本数", 1, 10, 2, 1)
@@ -247,7 +237,6 @@ def technical_scores(
     decline_add_count=20,
     decline_compare_bars=2,
     decline_price_column="Close",
-    decline_start_mode=START_MODE_RESET,
 ):
     if hist is None or hist.empty or "Close" not in hist.columns:
         return {"コード": code, "銘柄名": name or code, "error": "株価データなし"}
@@ -263,7 +252,6 @@ def technical_scores(
         add_count=decline_add_count,
         compare_bars=decline_compare_bars,
         price_column=decline_price_column,
-        start_mode=decline_start_mode,
     )
     count_summary = decline_summary(
         counted_history,
@@ -369,9 +357,15 @@ def technical_scores(
     recent_bb = pd.concat(
         [low.rename("low"), bb_lower.rename("lower")], axis=1
     ).dropna().tail(3) if low is not None else pd.DataFrame()
-    bb_lower_touched = bool(
-        not recent_bb.empty and (recent_bb["low"] <= recent_bb["lower"]).any()
+    bb_touch_mask = (
+        recent_bb["low"] <= recent_bb["lower"]
+        if not recent_bb.empty else pd.Series(dtype=bool)
     )
+    bb_lower_touched = bool(not bb_touch_mask.empty and bb_touch_mask.any())
+    bb_lower_touch_date = None
+    if bb_lower_touched:
+        bb_lower_touch_date = pd.Timestamp(recent_bb.index[bb_touch_mask][-1]).strftime("%Y/%m/%d")
+    bb_lower_distance_pct = float((px / blo - 1.0) * 100.0)
     pullback_zone = bool(
         28.0 <= rv <= 45.0 and px <= m25 and bb_lower_touched
         and ma75_touched and px <= m75 * 1.05
@@ -450,6 +444,8 @@ def technical_scores(
         "パラボリック判定日": psar_bar_time,
         "反転確認": rebound_confirmed, "75日線接触": ma75_touched,
         "BB下限到達": bb_lower_touched,
+        "BB下限到達日": bb_lower_touch_date,
+        "BB下限乖離%": bb_lower_distance_pct,
         "75日線乖離%": ma75_distance_pct, "BB位置σ": bb_position,
         "四半期足強度": quarterly["quarterly_score"] if quarterly else 0.0,
         "四半期足適合": quarterly_ok,
@@ -485,7 +481,6 @@ def scan_items(
     decline_add_count=20,
     decline_compare_bars=2,
     decline_price_column="Close",
-    decline_start_mode=START_MODE_RESET,
 ):
     items = [(normalize_code(c), str(n or "")) for c, n in items]
     items = [(c, n) for c, n in items if c]
@@ -511,7 +506,6 @@ def scan_items(
                     decline_add_count,
                     decline_compare_bars,
                     decline_price_column,
-                    decline_start_mode,
                 ))
             except Exception as exc:
                 results.append({"コード": code, "銘柄名": name or code, "error": f"分析エラー: {exc}"})
@@ -794,7 +788,6 @@ decline_setting_signature = (
     decline_add_count,
     decline_compare_bars,
     decline_price_column,
-    decline_start_mode,
 )
 if st.session_state.get("decline_setting_signature") != decline_setting_signature:
     st.session_state.scan_results = None
@@ -853,7 +846,6 @@ if u is not None and not u.empty:
                 decline_add_count,
                 decline_compare_bars,
                 decline_price_column,
-                decline_start_mode,
             )
             performed_scan = True
 
@@ -884,6 +876,8 @@ if st.session_state.scan_results is not None:
             r.setdefault("下げ追加到達日", None)
             r.setdefault("下げ買い本日到達", False)
             r.setdefault("下げ追加本日到達", False)
+            r.setdefault("BB下限到達日", None)
+            r.setdefault("BB下限乖離%", np.nan)
             r.setdefault("_下げカウント推移", [])
             r.setdefault("_下げバックテスト", [])
             r.setdefault("_下げ単独買い取引", [])
@@ -914,6 +908,14 @@ if st.session_state.scan_results is not None:
         decline_add_candidates = sorted(
             [r for r in ok if int(r.get("下げ日数") or 0) >= decline_add_count],
             key=lambda row: (-int(row.get("下げ日数") or 0), str(row.get("コード", ""))),
+        )
+        bb_lower_candidates = sorted(
+            [r for r in ok if bool(r.get("BB下限到達"))],
+            key=lambda row: (
+                str(row.get("BB下限到達日") or ""),
+                -float(row.get("BB位置σ") or 0.0),
+            ),
+            reverse=True,
         )
         decline_backtest_events = []
         decline_single_trades = []
@@ -1011,17 +1013,31 @@ if st.session_state.scan_results is not None:
         )
         with tab_buy:
             st.subheader(f"下げ日数カウンター買い候補（{count_min}〜{count_max}本目）")
-            if decline_start_mode == START_MODE_BB_UPPER:
-                st.caption(
-                    "ボリンジャーバンド(20日・2σ)の上限に高値が触れたあと、最初に前日比安となった日を1本目として数えます。"
-                    f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
-                    "次にバンド上限へ触れるまで数え直しません。"
-                )
-            else:
-                st.caption(
-                    f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
-                    "その後に最初の前日比安となった日を1本目として数えます。"
-                )
+            st.caption(
+                f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
+                "その後に最初の前日比安となった日を1本目として数えます。"
+            )
+            all_count_rows = []
+            for row in sorted(
+                ok,
+                key=lambda item: (-int(item.get("下げ日数") or 0), str(item.get("コード", ""))),
+            ):
+                all_count_rows.append({
+                    "コード": row["コード"],
+                    "銘柄名": row["銘柄名"],
+                    "現在カウント": int(row.get("下げ日数") or 0),
+                    "状態": row.get("下げカウント状態", "到達待ち"),
+                    "判定日": row.get("下げ判定日"),
+                    f"{decline_signal_count}本到達日": row.get("下げ買い到達日"),
+                    f"{decline_add_count}本到達日": row.get("下げ追加到達日"),
+                })
+
+            reached_today = sum(bool(row["下げ買い本日到達"]) for row in decline_candidates)
+            st.info(
+                f"全{len(ok)}銘柄を判定し、{count_min}〜{count_max}本目の買い候補は"
+                f"{len(decline_candidates)}銘柄です。本日{decline_signal_count}本へ到達した銘柄は"
+                f"{reached_today}件です。"
+            )
             if decline_candidates:
                 count_rows = []
                 for row in decline_candidates:
@@ -1042,18 +1058,23 @@ if st.session_state.scan_results is not None:
                     pd.DataFrame(count_rows),
                     hide_index=True,
                     width="stretch",
+                    height=min(72 + 35 * len(count_rows), 700),
                     column_config={
                         "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
                         "RSI14": st.column_config.NumberColumn(format="%.1f"),
                     },
                 )
-                reached_today = sum(bool(row["下げ買い本日到達"]) for row in decline_candidates)
-                st.success(
-                    f"表示範囲に{len(decline_candidates)}銘柄。"
-                    f"本日{decline_signal_count}本へ到達した銘柄は{reached_today}件です。"
-                )
             else:
                 st.info(f"現在、{count_min}〜{count_max}本目の銘柄はありません。")
+
+            with st.expander(f"全{len(all_count_rows)}銘柄の現在カウントを見る"):
+                st.caption("買い候補以外も含め、分析できた全銘柄を現在カウントの大きい順に表示します。")
+                st.dataframe(
+                    pd.DataFrame(all_count_rows),
+                    hide_index=True,
+                    width="stretch",
+                    height=650,
+                )
 
             if decline_add_candidates:
                 with st.expander(f"追加買いの目安（{decline_add_count}本以上・{len(decline_add_candidates)}件）"):
@@ -1075,8 +1096,12 @@ if st.session_state.scan_results is not None:
                     f"{row['コード']} {row['銘柄名']}": row for row in progression_source[:20]
                 }
                 default_progression = list(progression_by_label)[: min(3, len(progression_by_label))]
+                st.caption(
+                    "次の3銘柄枠は、日ごとのカウント推移を比較するための選択欄です。"
+                    "買い候補の件数を3銘柄に制限するものではありません。"
+                )
                 selected_progression = st.multiselect(
-                    "カウント推移を確認する銘柄（最大3銘柄）",
+                    "推移を確認する銘柄（比較表示は最大3銘柄）",
                     list(progression_by_label),
                     default=default_progression,
                     max_selections=3,
@@ -1103,6 +1128,38 @@ if st.session_state.scan_results is not None:
                             )
 
             st.warning("カウント到達は統計上の候補表示です。自動注文は行いません。")
+            st.markdown("---")
+            st.subheader("ボリンジャーバンド下限到達銘柄")
+            st.caption(
+                "直近3営業日の安値が、その日の25日ボリンジャーバンド下限（-2σ）以下に"
+                "到達した銘柄を表示します。反転・5日線上抜け・パラボリック成立前も含みます。"
+            )
+            st.info(
+                f"全{len(ok)}銘柄のうち、直近3営業日にボリンジャーバンド下限へ"
+                f"到達した銘柄は{len(bb_lower_candidates)}銘柄です。"
+            )
+            if bb_lower_candidates:
+                bb_rows = pd.DataFrame(bb_lower_candidates)[[
+                    "コード", "銘柄名", "BB下限到達日", "現在値", "BB下限",
+                    "BB下限乖離%", "BB位置σ", "RSI14", "下げ日数",
+                    "5日線上抜け", "パラボリック判定", "反転確認",
+                ]]
+                st.dataframe(
+                    bb_rows,
+                    hide_index=True,
+                    width="stretch",
+                    height=min(72 + 35 * len(bb_rows), 700),
+                    column_config={
+                        "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
+                        "BB下限": st.column_config.NumberColumn(format="¥%,.1f"),
+                        "BB下限乖離%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "BB位置σ": st.column_config.NumberColumn(format="%.2fσ"),
+                        "RSI14": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                )
+            else:
+                st.info("直近3営業日にボリンジャーバンド下限へ到達した銘柄はありません。")
+
             st.markdown("---")
             st.subheader("5日線上抜け買いサイン")
             st.success("逆張り条件を満たし、終値が5日線を下から上抜けた銘柄を表示します。パラボリックは参考表示です。")
@@ -1222,7 +1279,6 @@ if st.session_state.scan_results is not None:
             st.caption(
                 "各シグナル日の終値で仮想購入し、5営業日以内に一度でも終値が上回った割合と、"
                 "5営業日目の勝率・平均損益・期間中の最大ドローダウンを比較します。"
-                f"（数え始めの起点：{decline_start_label}）"
             )
             signal_summary = summarize_signal_events(
                 decline_backtest_events,
