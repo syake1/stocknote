@@ -12,6 +12,9 @@ from stocknote_detail import render_extended_detail
 from stocknote_candidate_view import candidate_status, price_change, render_candidate_table, signed_change
 from stocknote_decline_counter import (
     PRICE_LABELS,
+    START_MODE_BB_UPPER,
+    START_MODE_LABELS,
+    START_MODE_RESET,
     calculate_decline_count,
     completed_daily_history,
     decline_summary,
@@ -44,6 +47,13 @@ ENTRY_RULE_VERSION = 5
 
 with st.sidebar:
     st.markdown("### 下げ日数カウンター")
+    decline_start_label = st.selectbox(
+        "数え始めの起点",
+        list(START_MODE_LABELS),
+        index=0,
+        help="BB上限モードは、ボリンジャーバンド(20日・2σ)の上限に高値が触れたあと、最初の陰線から数えます。",
+    )
+    decline_start_mode = START_MODE_LABELS[decline_start_label]
     decline_signal_count = st.slider("買いシグナルの本数", 5, 30, 10, 1)
     decline_add_count = st.slider("追加買いの本数", 10, 60, 20, 1)
     decline_compare_bars = st.slider("比較する足の本数", 1, 10, 2, 1)
@@ -237,6 +247,7 @@ def technical_scores(
     decline_add_count=20,
     decline_compare_bars=2,
     decline_price_column="Close",
+    decline_start_mode=START_MODE_RESET,
 ):
     if hist is None or hist.empty or "Close" not in hist.columns:
         return {"コード": code, "銘柄名": name or code, "error": "株価データなし"}
@@ -252,6 +263,7 @@ def technical_scores(
         add_count=decline_add_count,
         compare_bars=decline_compare_bars,
         price_column=decline_price_column,
+        start_mode=decline_start_mode,
     )
     count_summary = decline_summary(
         counted_history,
@@ -481,6 +493,7 @@ def scan_items(
     decline_add_count=20,
     decline_compare_bars=2,
     decline_price_column="Close",
+    decline_start_mode=START_MODE_RESET,
 ):
     items = [(normalize_code(c), str(n or "")) for c, n in items]
     items = [(c, n) for c, n in items if c]
@@ -506,6 +519,7 @@ def scan_items(
                     decline_add_count,
                     decline_compare_bars,
                     decline_price_column,
+                    decline_start_mode,
                 ))
             except Exception as exc:
                 results.append({"コード": code, "銘柄名": name or code, "error": f"分析エラー: {exc}"})
@@ -788,6 +802,7 @@ decline_setting_signature = (
     decline_add_count,
     decline_compare_bars,
     decline_price_column,
+    decline_start_mode,
 )
 if st.session_state.get("decline_setting_signature") != decline_setting_signature:
     st.session_state.scan_results = None
@@ -846,6 +861,7 @@ if u is not None and not u.empty:
                 decline_add_count,
                 decline_compare_bars,
                 decline_price_column,
+                decline_start_mode,
             )
             performed_scan = True
 
@@ -1013,10 +1029,17 @@ if st.session_state.scan_results is not None:
         )
         with tab_buy:
             st.subheader(f"下げ日数カウンター買い候補（{count_min}〜{count_max}本目）")
-            st.caption(
-                f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
-                "その後に最初の前日比安となった日を1本目として数えます。"
-            )
+            if decline_start_mode == START_MODE_BB_UPPER:
+                st.caption(
+                    "ボリンジャーバンド(20日・2σ)の上限に高値が触れたあと、最初に前日比安となった日を1本目として数えます。"
+                    f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
+                    "次にバンド上限へ触れるまで数え直しません。"
+                )
+            else:
+                st.caption(
+                    f"{decline_price_label}が{decline_compare_bars}本前より高い日は0へリセットし、"
+                    "その後に最初の前日比安となった日を1本目として数えます。"
+                )
             all_count_rows = []
             for row in sorted(
                 ok,
@@ -1279,6 +1302,7 @@ if st.session_state.scan_results is not None:
             st.caption(
                 "各シグナル日の終値で仮想購入し、5営業日以内に一度でも終値が上回った割合と、"
                 "5営業日目の勝率・平均損益・期間中の最大ドローダウンを比較します。"
+                f"（数え始めの起点：{decline_start_label}）"
             )
             signal_summary = summarize_signal_events(
                 decline_backtest_events,
