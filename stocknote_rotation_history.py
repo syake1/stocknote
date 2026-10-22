@@ -64,20 +64,53 @@ def analyze_rotation_patterns(candidates, history, market_score=50.0, asof=None)
         previous_rank = int(latest["rank"]) if latest else None
         rank_change = previous_rank - rank if previous_rank is not None else None
         acceleration = float(current["5日%"] - latest["day5"]) if latest else None
-        accelerating = bool(
-            latest
-            and rank <= 5
-            and appearances >= 2
-            and 0 < float(current["1日%"]) <= 4.0
-            and float(current["20日%"]) <= 12.0
-            and ((rank_change is not None and rank_change > 0) or acceleration >= 0.75)
+        day1 = float(current["1日%"])
+        day5 = float(current["5日%"])
+        day20 = float(current["20日%"])
+        ma5_distance = float(current.get("5日線乖離%", 0.0) or 0.0)
+        overheated = bool(
+            day1 > 4.0 or day5 >= 7.0 or day20 >= 15.0 or ma5_distance > 3.0
         )
-        if accelerating:
-            handling = (
-                "寄り付き確認（地合い逆風）"
-                if float(market_score) <= 38.0
-                else "翌朝の成行検討（手動確認）"
+        fresh_sector = bool(
+            current.get("業種判定") == "循環初動"
+            and 0 < day1 <= 4.0
+            and -3.5 <= day5 < 4.0
+            and day20 <= 12.0
+            and -2.0 <= ma5_distance <= 2.0
+        )
+        accelerating = bool(
+            not overheated
+            and rank <= 10
+            and 0 < day1 <= 4.0
+            and day20 <= 12.0
+            and (
+                bool(current.get("5日線上抜け"))
+                or fresh_sector
+                or (
+                    latest and appearances >= 2
+                    and ((rank_change is not None and rank_change > 0) or acceleration >= 0.75)
+                )
             )
+        )
+        if current.get("5日線上抜け"):
+            reason = "5日線上抜け"
+        elif fresh_sector:
+            reason = "業種初動＋5日線付近"
+        elif accelerating:
+            reason = "順位改善＋上昇加速"
+        elif overheated:
+            reason = "上昇後・過熱"
+        else:
+            reason = "条件待ち"
+        if accelerating:
+            if float(market_score) <= 38.0:
+                handling = "寄り付き確認（地合い逆風）"
+            elif current.get("5日線上抜け"):
+                handling = "翌朝候補（寄り付き確認）"
+            else:
+                handling = "先回り監視（5日線上抜け待ち）"
+        elif overheated:
+            handling = "上昇後・追わない"
         else:
             handling = "継続監視"
         results.append({
@@ -88,6 +121,16 @@ def analyze_rotation_patterns(candidates, history, market_score=50.0, asof=None)
             "順位変化": rank_change,
             "5日加速pt": acceleration,
             "初動加速": accelerating,
+            "初動理由": reason,
+            "過熱判定": "過熱" if overheated else "未過熱",
+            "初動段階": current.get("初動段階", "条件待ち"),
             "翌朝の扱い": handling,
         })
+    results.sort(key=lambda row: (
+        0 if row["初動加速"] else 1,
+        1 if row["過熱判定"] == "過熱" else 0,
+        0 if row.get("業種判定") == "循環初動" else 1,
+        -(row.get("順位変化") or 0),
+        -float(row.get("循環点", 0.0) or 0.0),
+    ))
     return results

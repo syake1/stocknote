@@ -44,18 +44,39 @@ STOCK_NAMES = {
     "4502": "武田薬品工業", "4503": "アステラス製薬", "4519": "中外製薬", "4568": "第一三共",
 }
 
+ROTATION_STAGE_PRIORITY = {
+    "循環初動": 0,
+    "循環買い": 1,
+    "反発初動": 2,
+    "上昇継続": 3,
+    "様子見": 4,
+    "上昇後・過熱": 5,
+    "資金流出": 6,
+}
+
+
+def _one_day_acceleration(day1, day5):
+    """Compare today's return with the prior four-day daily pace."""
+    prior_four_day_pace = (float(day5) - float(day1)) / 4.0
+    return float(day1) - prior_four_day_pace
+
 
 def classify_rotation(day1, day5, day20, breadth5, above_ma20, breadth1=None):
     """Classify whether a sector is receiving fresh rotation money."""
+    acceleration = _one_day_acceleration(day1, day5)
+    if day5 >= 6.0 or day20 >= 12.0 or (above_ma20 >= 80 and day5 >= 4.0):
+        return "上昇後・過熱", "追わない"
     if (
         breadth1 is not None
-        and day1 >= 0.6
-        and breadth1 >= 60
-        and -2.5 <= day5 < 1.0
-        and -12.0 <= day20 <= 8.0
+        and day1 >= 0.15
+        and breadth1 >= 50
+        and acceleration >= 0.25
+        and -3.5 <= day5 < 2.5
+        and -12.0 <= day20 <= 6.0
+        and above_ma20 <= 80
     ):
-        return "循環初動", "先行監視"
-    if day1 > 0 and day5 >= 1.0 and breadth5 >= 60 and -3.0 <= day20 <= 8.0:
+        return "循環初動", "先回り監視"
+    if day1 > 0 and day5 >= 0.75 and breadth5 >= 60 and -3.0 <= day20 < 12.0:
         return "循環買い", "買い候補"
     if day5 >= 1.0 and day20 > 0 and breadth5 >= 60 and above_ma20 >= 60:
         return "上昇継続", "押し目待ち"
@@ -82,23 +103,45 @@ def rank_rotation_stocks(sector_rows, market_score=50.0, limit=10):
             day20 = float(stock.get("20日%", 0.0) or 0.0)
             above_ma20 = bool(stock.get("20日線上"))
             ma5_cross_up = bool(stock.get("5日線上抜け"))
+            ma5_distance = float(stock.get("5日線乖離%", 0.0) or 0.0)
+            acceleration = float(
+                stock.get("1日加速pt", _one_day_acceleration(day1, day5)) or 0.0
+            )
+            overheated = bool(
+                day1 > 4.0 or day5 >= 7.0 or day20 >= 15.0 or ma5_distance > 3.0
+            )
+            if overheated:
+                continue
             if sector_state == "循環初動":
-                if not ma5_cross_up or day1 <= 0 or day5 < -2.0 or day20 > 15.0:
+                near_ma5 = -2.0 <= ma5_distance <= 2.0
+                if day1 <= 0 or day5 < -3.5 or day5 >= 4.0 or day20 > 12.0 or not near_ma5:
                     continue
             else:
                 if day5 <= 0 or not above_ma20 or day1 < -2.0 or day20 > 15.0:
                     continue
                 if day5 < sector_return - 1.0:
                     continue
-            score = 50.0 + sector_flow * 4.0 + day5 * 3.0 + day1 * 1.5
+            score = (66.0 if sector_state == "循環初動" else 52.0)
+            score += sector_flow * 3.0 + acceleration * 6.0 + day1 * 1.5
             score += 8.0 if ma5_cross_up else 0.0
-            score += 5.0 if sector_state == "循環初動" else 0.0
+            score += 6.0 if -0.8 <= ma5_distance <= 1.2 else 0.0
+            score -= max(day5 - 4.0, 0.0) * 3.0
             if day20 > 10.0:
                 score -= (day20 - 10.0) * 2.0
+            if ma5_distance > 2.0:
+                score -= (ma5_distance - 2.0) * 5.0
+            if sector_state == "循環初動":
+                early_stage = "初動確認" if ma5_cross_up else "上抜け前"
+            else:
+                early_stage = "循環確認"
             if risk_off:
                 handling = "地合い逆風・監視優先"
-            elif ma5_cross_up:
+            elif sector_state == "循環初動" and ma5_cross_up:
                 handling = "循環初動・5日線上抜け"
+            elif sector_state == "循環初動":
+                handling = "先回り監視・5日線付近"
+            elif ma5_cross_up:
+                handling = "循環買い・5日線上抜け"
             else:
                 handling = "循環上位・5日線待ち"
             ranked.append({
@@ -112,10 +155,17 @@ def rank_rotation_stocks(sector_rows, market_score=50.0, limit=10):
                 "20日%": day20,
                 "循環点": float(np.clip(score, 0, 100)),
                 "扱い": handling,
+                "初動段階": early_stage,
+                "過熱判定": "未過熱",
+                "1日加速pt": acceleration,
                 "5日線上抜け": ma5_cross_up,
-                "5日線乖離%": float(stock.get("5日線乖離%", 0.0) or 0.0),
+                "5日線乖離%": ma5_distance,
             })
-    ranked.sort(key=lambda row: row["循環点"], reverse=True)
+    ranked.sort(key=lambda row: (
+        0 if row["業種判定"] == "循環初動" else 1,
+        0 if row["初動段階"] == "初動確認" else 1,
+        -row["循環点"],
+    ))
     return ranked[:limit]
 
 
@@ -155,6 +205,10 @@ def analyze_close_prices(close, baskets=None):
                 "5日線上": current >= float(ma5.iloc[-1]),
                 "5日線上抜け": ma5_cross_up,
                 "5日線乖離%": (current / float(ma5.iloc[-1]) - 1) * 100,
+                "1日加速pt": _one_day_acceleration(
+                    (current / float(series.iloc[-2]) - 1) * 100,
+                    (current / float(series.iloc[-6]) - 1) * 100,
+                ),
             })
             latest_dates.append(series.index[-1])
         if not metrics:
@@ -166,6 +220,7 @@ def analyze_close_prices(close, baskets=None):
         breadth1 = float(frame["1日上昇"].mean() * 100)
         breadth5 = float(frame["5日上昇"].mean() * 100)
         above_ma20 = float(frame["20日線上"].mean() * 100)
+        acceleration = _one_day_acceleration(day1, day5)
         rotation, action = classify_rotation(
             day1, day5, day20, breadth5, above_ma20, breadth1
         )
@@ -173,6 +228,13 @@ def analyze_close_prices(close, baskets=None):
             day1 * 0.25 + day5 * 0.45 + day20 * 0.20
             + (breadth1 - 50) * 0.04 + (breadth5 - 50) * 0.02
         )
+        early_score = float(np.clip(
+            50.0 + acceleration * 18.0 + (breadth1 - 50.0) * 0.25
+            - max(day5 - 2.5, 0.0) * 5.0
+            - max(day20 - 6.0, 0.0) * 2.0,
+            0.0,
+            100.0,
+        ))
         rows.append({
             "業種・テーマ": sector,
             "判定": rotation,
@@ -183,15 +245,25 @@ def analyze_close_prices(close, baskets=None):
             "1日上昇銘柄%": breadth1,
             "5日上昇銘柄%": breadth5,
             "20日線上銘柄%": above_ma20,
+            "1日加速pt": acceleration,
+            "初動点": early_score,
             "資金流入点": float(flow_score),
             "取得銘柄数": len(metrics),
             "銘柄候補": sorted(
-                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%", "20日線上", "5日線上", "5日線上抜け", "5日線乖離%"]].to_dict("records"),
-                key=lambda item: item["5日%"],
+                frame[["コード", "銘柄名", "現在値", "1日%", "5日%", "20日%", "20日線上", "5日線上", "5日線上抜け", "5日線乖離%", "1日加速pt"]].to_dict("records"),
+                key=lambda item: (
+                    bool(item["5日線上抜け"]),
+                    float(item["1日加速pt"]),
+                    -abs(float(item["5日線乖離%"])) if "5日線乖離%" in item else 0.0,
+                ),
                 reverse=True,
             ),
         })
-    rows.sort(key=lambda row: row["資金流入点"], reverse=True)
+    rows.sort(key=lambda row: (
+        ROTATION_STAGE_PRIORITY.get(row["判定"], 99),
+        -row["初動点"],
+        -row["資金流入点"],
+    ))
     latest = max(latest_dates) if latest_dates else None
     return rows, latest
 

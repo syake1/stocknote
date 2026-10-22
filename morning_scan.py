@@ -222,12 +222,13 @@ def update_rotation_ranking():
             for index, row in enumerate(early[:5], 1):
                 lines.append(
                     f"{index}. **{row['コード']} {row['銘柄名']}** ({row['業種・テーマ']})"
-                    f" / 順位 {row['本日順位']} / 5日 {row['5日%']:+.2f}%"
-                    f" / 20日 {row['20日%']:+.2f}% / {row['翌朝の扱い']}"
+                    f" / {row.get('初動段階', '初動監視')} / 順位 {row['本日順位']}"
+                    f" / 1日 {row['1日%']:+.2f}% / 5日 {row['5日%']:+.2f}%"
+                    f" / 20日 {row['20日%']:+.2f}% / {row['初動理由']} / {row['翌朝の扱い']}"
                 )
             lines.append("寄り付き気配が前日終値より3%以上高い場合は成行を見送り、SBIで気配を確認。自動注文はしません。")
         else:
-            lines.append("連続上位・順位上昇・上昇加速がそろった候補はありません。")
+            lines.append("未過熱の循環初動・順位改善・5日線付近の候補はありません。")
         response = requests.post(WEBHOOK, json={"content": "\n".join(lines)[:1950]}, timeout=20)
         response.raise_for_status()
     return patterns
