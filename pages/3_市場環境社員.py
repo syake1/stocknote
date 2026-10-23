@@ -1,5 +1,4 @@
 import math
-import os
 from datetime import datetime
 
 import numpy as np
@@ -8,7 +7,6 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
-from stocknote_sector_entry import add_sector_candidate
 
 st.set_page_config(page_title="Stocknote 市場環境社員", layout="wide")
 st.title("🌍 Stocknote 市場環境社員")
@@ -30,7 +28,6 @@ MARKETS = {
     "米10年金利": "^TNX",
     "米30年金利": "^TYX",
 }
-DB_PATH = os.getenv("STOCKNOTE_DB_PATH", "data/stocknote.sqlite3")
 ROTATION_RULE_VERSION = 2
 
 
@@ -320,23 +317,20 @@ if sector_rows:
                         y_label="株価（円）",
                     )
 
-    st.markdown("### 本日の循環初動（早い順）")
+    st.markdown("### 本日の業種循環（参考）")
     if rotation_active:
         if rotation_early:
             names = "、".join(row["業種・テーマ"] for row in rotation_early)
-            st.success(f"最優先・先回り監視（循環初動）：{names}")
+            st.info(f"循環初動の参考業種：{names}")
         if rotation_buys:
             names = "、".join(row["業種・テーマ"] for row in rotation_buys)
-            st.success(f"買い候補（循環買い）：{names}")
+            st.info(f"資金流入中の参考業種：{names}")
         if rotation_overheated:
             names = "、".join(row["業種・テーマ"] for row in rotation_overheated)
             st.warning(f"上昇後のため追わない：{names}")
 
-        st.markdown("#### 本日の循環セクター銘柄")
-        if view["score"] <= 38:
-            st.warning("地合いはリスクオフです。下表は買いサインではなく監視優先です。")
-        else:
-            st.info("『循環初動』を最上位に表示します。5日線上抜けは初動確認、5日線付近は上抜け前の先回り監視です。パラボリックは参考表示だけにします。")
+        st.markdown("#### 業種内の参考銘柄")
+        st.warning("この順位は資金循環を見るための参考です。買い候補には登録せず、10月9日基準の押し目判定を優先します。")
         if rotation_stocks:
             ranked_df = pd.DataFrame(rotation_stocks)
             if "業種判定" not in ranked_df.columns:
@@ -374,40 +368,8 @@ if sector_rows:
         else:
             st.info("循環初動・循環買い業種の中に、個別銘柄の条件がそろった候補はありません。")
 
-        st.markdown("#### 循環初動・循環買いを買い候補へ入れる")
-        selected_sector = st.selectbox(
-            "循環セクター",
-            [row["業種・テーマ"] for row in rotation_active],
-        )
-        selected_row = next(row for row in rotation_active if row["業種・テーマ"] == selected_sector)
-        stock_options = rank_rotation_stocks([selected_row], view["score"], limit=20)
-        if stock_options:
-            selected_code = st.selectbox(
-                "登録する代表銘柄",
-                [item["コード"] for item in stock_options],
-                format_func=lambda code: next(
-                    f"{item['コード']} {item['銘柄名']}　現在値 ¥{item['現在値']:,.1f}　5日 {item['5日%']:+.2f}%"
-                    for item in stock_options if item["コード"] == code
-                ),
-            )
-            selected_stock = next(item for item in stock_options if item["コード"] == selected_code)
-            if st.button("買い候補へ入れる（注文は送信しません）", type="primary", width="stretch"):
-                added = add_sector_candidate(
-                    DB_PATH,
-                    selected_stock["コード"],
-                    selected_stock["銘柄名"],
-                    selected_sector,
-                    asof.replace("/", "-"),
-                    selected_stock["現在値"],
-                )
-                if added:
-                    st.success(f"{selected_stock['コード']} {selected_stock['銘柄名']} を追跡へ登録しました。")
-                else:
-                    st.info("この銘柄は本日の循環候補として登録済みです。")
-            st.page_link("pages/2_追跡・保有管理.py", label="追跡・保有管理で確認")
-            st.caption("ここでは買い候補への記録だけを行います。証券会社への発注は行いません。")
     else:
-        st.info("本日は『循環初動』『循環買い』の条件を満たす業種はありません。無理に業種買いをしない判定です。")
+        st.info("本日は、循環の参考条件を満たす業種はありません。")
     st.caption(f"判定日：{asof}。代表銘柄の等ウェイト平均で、短期資金の向きを毎日判定しています。")
 
     st.markdown("#### 業種の初動順位")
