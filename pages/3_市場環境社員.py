@@ -31,6 +31,7 @@ MARKETS = {
     "米30年金利": "^TYX",
 }
 DB_PATH = os.getenv("STOCKNOTE_DB_PATH", "data/stocknote.sqlite3")
+ROTATION_RULE_VERSION = 2
 
 
 def _flat_history(symbol):
@@ -86,7 +87,8 @@ def load_market_data():
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def load_sector_rotation():
+def load_sector_rotation(rule_version=ROTATION_RULE_VERSION):
+    del rule_version
     return download_sector_rotation()
 
 
@@ -212,7 +214,7 @@ if st.button("🔄 市場環境を更新", type="primary", width="stretch"):
 with st.spinner("世界市場を確認しています…"):
     rows = load_market_data()
 with st.spinner("日本株の業種別資金流入を確認しています…"):
-    sector_rows, sector_date = load_sector_rotation()
+    sector_rows, sector_date = load_sector_rotation(ROTATION_RULE_VERSION)
 
 ok = [r for r in rows if r.get("取得")]
 bad = [r for r in rows if not r.get("取得")]
@@ -246,6 +248,18 @@ if sector_rows:
                 / len(stocks) * 100
                 if stocks else 0.0
             )
+        day1 = float(row.get("1日%", 0.0) or 0.0)
+        day5 = float(row.get("5日%", 0.0) or 0.0)
+        acceleration = day1 - (day5 - day1) / 4.0
+        row.setdefault("1日加速pt", acceleration)
+        row.setdefault("初動点", float(np.clip(
+            50.0 + acceleration * 18.0
+            + (float(row.get("1日上昇銘柄%", 50.0) or 50.0) - 50.0) * 0.25
+            - max(day5 - 2.5, 0.0) * 5.0
+            - max(float(row.get("20日%", 0.0) or 0.0) - 6.0, 0.0) * 2.0,
+            0.0,
+            100.0,
+        )))
     rotation_early = [row for row in sector_rows if row["判定"] == "循環初動"]
     rotation_buys = [row for row in sector_rows if row["判定"] == "循環買い"]
     rotation_overheated = [row for row in sector_rows if row["判定"] == "上昇後・過熱"]
