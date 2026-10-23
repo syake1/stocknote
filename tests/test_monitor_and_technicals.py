@@ -10,10 +10,21 @@ import pandas as pd
 
 from monitor_candidates import is_market_session
 import monitor_candidates as monitor
-from stocknote_technicals import calculate, daily_trend_context, quarterly_strength_context
+from stocknote_technicals import (
+    baseline_pullback_zone,
+    calculate,
+    daily_trend_context,
+    quarterly_strength_context,
+)
 
 
 class MonitorAndTechnicalTests(unittest.TestCase):
+    def test_baseline_pullback_does_not_require_bb_lower_touch(self):
+        self.assertTrue(baseline_pullback_zone(38, 96, 100, -0.6, True, 94))
+
+    def test_baseline_pullback_rejects_price_far_above_ma75(self):
+        self.assertFalse(baseline_pullback_zone(38, 106, 110, -0.6, True, 100))
+
     def test_monitor_only_notifies_existing_risk_events(self):
         candidate = {"code": "1234", "entry_rule_version": monitor.ENTRY_RULE_VERSION}
         risk = {"code": "1234", "to": "条件悪化"}
