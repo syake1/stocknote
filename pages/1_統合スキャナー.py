@@ -29,6 +29,8 @@ from stocknote_universe import load_universe as load_saved_universe
 from stocknote_universe import save_universe as save_saved_universe
 from stocknote_tracking import load_active, merge_new_candidates
 from stocknote_technicals import (
+    SELECTION_BASELINE_DATE,
+    baseline_pullback_zone,
     calculate as calculate_technical_snapshot,
     daily_trend_context,
     quarterly_strength_context,
@@ -40,9 +42,9 @@ from stocknote_rotation_history import analyze_rotation_patterns, load_rotation_
 st.set_page_config(page_title="Stocknote 統合スキャナー", layout="wide")
 st.title("🧭 Stocknote 統合スキャナー")
 st.caption("保存したSBI CSVを母集団に、テクニカル・ファンダメンタル・市場環境を合わせて候補を評価します。")
-st.success("✅ 逆張り新条件 v4：75日線接触＋BB下限到達＋反転確認")
+st.success(f"✅ 買い候補は{SELECTION_BASELINE_DATE.replace('-', '/')}基準：75日線付近の押し目＋反転確認")
 
-SCANNER_RULE_VERSION = 6
+SCANNER_RULE_VERSION = 7
 ENTRY_RULE_VERSION = 5
 
 with st.sidebar:
@@ -378,9 +380,13 @@ def technical_scores(
     if bb_lower_touched:
         bb_lower_touch_date = pd.Timestamp(recent_bb.index[bb_touch_mask][-1]).strftime("%Y/%m/%d")
     bb_lower_distance_pct = float((px / blo - 1.0) * 100.0)
-    pullback_zone = bool(
-        28.0 <= rv <= 45.0 and px <= m25 and bb_lower_touched
-        and ma75_touched and px <= m75 * 1.05
+    pullback_zone = baseline_pullback_zone(
+        rv,
+        px,
+        m25,
+        bb_position,
+        ma75_touched,
+        m75,
     )
     rebound_confirmed = bool(
         reversal or lower_wick_reversal or (px > prev_px and rv > prev_rsi)
@@ -959,9 +965,7 @@ if st.session_state.scan_results is not None:
                     r["トレンド判定"] = "逆張り条件は合格・ファンダ40点未満で除外"
         monitored = sorted([r for r in buy_pre if r.get("買い対象")],
                            key=lambda x: x["総合買い評価"], reverse=True)
-        buy = [r for r in monitored if r.get("買いサイン")]
-        watch_only = sorted([r for r in monitored if not r.get("買いサイン")],
-                            key=lambda x: x["買いスコア"], reverse=True)
+        buy = monitored
         short_pre = sorted([r for r in ok if r.get("空売りトレンド適合")],
                            key=lambda x: x["空売りスコア"], reverse=True)[:20]
         if performed_scan:
@@ -1025,7 +1029,7 @@ if st.session_state.scan_results is not None:
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
 
         tab_buy, tab_rotation, tab_short, tab_meeting, tab_decline_bt = st.tabs(
-            ["📈 買いサイン", "🔁 循環セクター候補", "📉 空売り候補", "👥 AI社員会議", "下げ日数バックテスト"]
+            ["📈 買い候補", "🔁 循環セクター（参考）", "📉 空売り候補", "👥 AI社員会議", "下げ日数バックテスト"]
         )
         with tab_buy:
             st.subheader(f"下げ日数カウンター買い候補（{count_min}〜{count_max}本目）")
@@ -1184,9 +1188,9 @@ if st.session_state.scan_results is not None:
                 st.info("直近3営業日にボリンジャーバンド下限へ到達した銘柄はありません。")
 
             st.markdown("---")
-            st.subheader("5日線上抜け買いサイン")
-            st.success("逆張り条件を満たし、終値が5日線を下から上抜けた銘柄を表示します。パラボリックは参考表示です。")
-            st.caption("総合買い評価は逆張り80%・ファンダ20%。75日線から5%以上高い銘柄は除外します。")
+            st.subheader("10月9日基準の押し目買い候補")
+            st.success("75日線付近の上昇トレンド押し目と反転確認で選びます。5日線とパラボリックは参考表示で、必須条件にしません。")
+            st.caption("総合買い評価は逆張り80%・ファンダ20%。RSI 28〜45、25日線以下、BB位置-0.5σ以下、75日線接触を判定します。")
             cols = ["コード", "銘柄名", "総合買い評価", "買いスコア", "ファンダ点",
                     "RSI14", "BB位置σ", "現在値", "75日線乖離%", "75日線接触",
                     "BB下限到達", "5日線上抜け", "5日線乖離%", "MA5",
@@ -1204,24 +1208,17 @@ if st.session_state.scan_results is not None:
                     with st.spinner(f"{code} の詳細分析中…"):
                         show_buy_detail(row, market_score)
             else:
-                st.info("現在、5日線を上抜けた銘柄はありません。買いサインは出していません。")
-            with st.expander(f"5日線上抜け待ち・監視のみ（{len(watch_only)}件）"):
-                if watch_only:
-                    st.dataframe(pd.DataFrame(watch_only)[["コード", "銘柄名", "5日線上抜け", "5日線乖離%", "MA5", "パラボリック判定", "四半期足強度", "四半期RSI14", "四半期足判定", "月足大上ヒゲ", "日足BB上抜け過熱", "RSI14", "一目位置", "トレンド判定"]].head(100),
-                                 hide_index=True, use_container_width=True)
+                st.info("現在、10月9日基準の押し目条件を満たす銘柄はありません。")
 
         with tab_rotation:
-            st.subheader("本日の循環セクター銘柄")
-            st.caption("順位改善・当日の加速・業種内の広がりから『循環初動』を最上位にします。5日線上抜けは初動確認、5日線付近は上抜け前の先回り監視です。")
+            st.subheader("循環セクターの参考表示")
+            st.caption("業種の資金の向きを確認する表です。この銘柄順位は買い候補やDiscord通知には使いません。")
             st.warning("朝の成行は自動発注しません。SBIの寄り付き気配が前日終値より3%以上高い場合は、飛びつかず見送り判定です。")
             if market_score <= 38:
                 st.warning("地合いはリスクオフです。候補は表示しますが『監視優先』で、買いサインにはしません。")
             if rotation_patterns:
                 early_count = sum(bool(row["初動加速"]) for row in rotation_patterns)
-                if early_count:
-                    st.success(f"循環初動・順位改善・5日線付近を先に拾った候補：{early_count}銘柄")
-                else:
-                    st.info("本日は、未過熱の循環初動条件がそろった銘柄はありません。")
+                st.info(f"循環初動参考：{early_count}銘柄（売買判定には不使用）")
                 rotation_df = pd.DataFrame(rotation_patterns)
                 # A running Streamlit process may briefly retain rows made
                 # before the early-rotation and MA5 columns were introduced.
@@ -1271,9 +1268,9 @@ if st.session_state.scan_results is not None:
                             width="stretch",
                             config={"displayModeBar": False},
                         )
-                st.page_link("pages/3_市場環境社員.py", label="業種全体と買い候補登録を確認")
+                st.page_link("pages/3_市場環境社員.py", label="業種全体とチャートを確認")
             else:
-                st.info("本日は、循環初動・循環買いの中に未過熱の個別候補はありません。")
+                st.info("本日は、表示できる循環セクター参考銘柄はありません。")
 
         with tab_short:
             st.subheader("信用売り総合ランキング")
