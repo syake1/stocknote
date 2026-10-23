@@ -6,6 +6,7 @@ import yfinance as yf
 
 # Incremented when the scanner and shared quarterly analysis must redeploy together.
 QUARTERLY_STRENGTH_VERSION = 1
+SELECTION_BASELINE_DATE = "2026-10-09"
 
 
 def rsi14(close):
@@ -17,6 +18,20 @@ def rsi14(close):
     value = value.mask((loss == 0) & (gain > 0), 100.0)
     value = value.mask((loss == 0) & (gain == 0), 50.0)
     return value.fillna(50)
+
+
+def baseline_pullback_zone(rsi, price, ma25, bb_position, ma75_touched, ma75):
+    """Return the buy-candidate pullback gate used on 2026-10-09."""
+    values = (rsi, price, ma25, bb_position, ma75)
+    if any(value is None or not np.isfinite(float(value)) for value in values):
+        return False
+    return bool(
+        28.0 <= float(rsi) <= 45.0
+        and float(price) <= float(ma25)
+        and float(bb_position) <= -0.5
+        and bool(ma75_touched)
+        and float(price) <= float(ma75) * 1.05
+    )
 
 
 def daily_trend_context(hist):

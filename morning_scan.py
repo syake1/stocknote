@@ -16,7 +16,7 @@ import yfinance as yf
 from monitor_candidates import notify
 from stocknote_fundamentals import get_fundamentals
 from stocknote_tracking import filter_new_notifications, merge_new_candidates
-from stocknote_technicals import daily_trend_context
+from stocknote_technicals import baseline_pullback_zone, daily_trend_context
 from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
 from stocknote_rotation_history import analyze_rotation_patterns, save_rotation_snapshot
 
@@ -137,12 +137,13 @@ def score_one(code, name):
     ma75_touched = bool(low is not None and touched_ma75_recently(low, ma75, lookback=3))
     bb_lower_touched = bool(low is not None and touched_bb_lower_recently(low, lower, lookback=3))
     ma75_distance_pct = (px / m75 - 1.0) * 100.0
-    pullback_zone = bool(
-        28.0 <= rv <= 45.0
-        and px <= m25
-        and bb_lower_touched
-        and ma75_touched
-        and px <= m75 * 1.05
+    pullback_zone = baseline_pullback_zone(
+        rv,
+        px,
+        m25,
+        bb_position,
+        ma75_touched,
+        m75,
     )
     rebound_confirmed = bool(
         reversal or lower_wick_reversal
@@ -208,29 +209,17 @@ def post_discord(rows, total):
 
 
 def update_rotation_ranking():
-    """Save one daily sector-leader snapshot and report early acceleration."""
+    """Save sector history for reference without creating buy notifications."""
     sector_rows, sector_date = download_sector_rotation()
     candidates = rank_rotation_stocks(sector_rows, market_score=50.0)
     asof = str(sector_date)[:10] if sector_date is not None else datetime.now().strftime("%Y-%m-%d")
     history = save_rotation_snapshot(candidates, asof)
     patterns = analyze_rotation_patterns(candidates, history, market_score=50.0, asof=asof)
     early = [row for row in patterns if row["初動加速"]]
-    print(f"rotation ranking: {len(candidates)} leaders / {len(early)} early accelerations")
-    if SEND_MEETING and WEBHOOK:
-        lines = [f"🔁 **Stocknote 循環セクター初動候補**  {asof}"]
-        if early:
-            for index, row in enumerate(early[:5], 1):
-                lines.append(
-                    f"{index}. **{row['コード']} {row['銘柄名']}** ({row['業種・テーマ']})"
-                    f" / {row.get('初動段階', '初動監視')} / 順位 {row['本日順位']}"
-                    f" / 1日 {row['1日%']:+.2f}% / 5日 {row['5日%']:+.2f}%"
-                    f" / 20日 {row['20日%']:+.2f}% / {row['初動理由']} / {row['翌朝の扱い']}"
-                )
-            lines.append("寄り付き気配が前日終値より3%以上高い場合は成行を見送り、SBIで気配を確認。自動注文はしません。")
-        else:
-            lines.append("未過熱の循環初動・順位改善・5日線付近の候補はありません。")
-        response = requests.post(WEBHOOK, json={"content": "\n".join(lines)[:1950]}, timeout=20)
-        response.raise_for_status()
+    print(
+        f"rotation reference: {len(candidates)} leaders / {len(early)} early accelerations; "
+        "excluded from buy notifications"
+    )
     return patterns
 
 
