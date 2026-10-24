@@ -700,6 +700,85 @@ def price_chart(h, timeframe):
     return fig
 
 
+def stock_identity_from_row(row):
+    """Return a normalized stock code and name from any scanner table row."""
+    code = ""
+    for column in ("コード", "code", "銘柄"):
+        if column in row and not pd.isna(row.get(column)):
+            code = normalize_code(row.get(column))
+            if code:
+                break
+
+    name = ""
+    for column in ("銘柄名", "name"):
+        if column in row and not pd.isna(row.get(column)):
+            name = str(row.get(column)).strip()
+            if name:
+                break
+    if not name and "銘柄" in row and not pd.isna(row.get("銘柄")):
+        name = re.sub(rf"^\s*{re.escape(code)}\s*", "", str(row.get("銘柄"))).strip()
+    return code, name
+
+
+def render_selected_daily_chart(code, name, key):
+    with st.container(border=True):
+        st.markdown(f"#### {code} {name} 日足チャート")
+        with st.spinner(f"{code} のチャートを取得中…"):
+            h = detail_history(code, "日足")
+        if h.empty or not all(column in h.columns for column in ("Open", "High", "Low", "Close")):
+            st.warning("この銘柄のチャートデータを取得できませんでした。")
+            return
+        st.plotly_chart(
+            price_chart(h.tail(TIMEFRAME_CONFIG["日足"]["bars"]), "日足"),
+            width="stretch",
+            key=f"{key}_chart_{code}",
+            config={"displayModeBar": False},
+        )
+        st.caption("行の選択を外すとチャートを閉じられます。")
+
+
+def render_clickable_stock_table(
+    frame,
+    *,
+    key,
+    height=None,
+    column_config=None,
+    style_func=None,
+    show_chart=True,
+):
+    """Render a stock table whose selected row opens its daily chart."""
+    table = pd.DataFrame(frame).reset_index(drop=True)
+    st.caption("👆 見たい銘柄の行をクリックすると、すぐ下に日足チャートが出ます。")
+    display_table = table.style.apply(style_func, axis=1) if style_func else table
+    dataframe_args = {
+        "hide_index": True,
+        "width": "stretch",
+        "key": key,
+        "on_select": "rerun",
+        "selection_mode": "single-row",
+        "alt": "銘柄を選択すると日足チャートが開く一覧表",
+    }
+    if height is not None:
+        dataframe_args["height"] = height
+    if column_config:
+        dataframe_args["column_config"] = column_config
+    event = st.dataframe(display_table, **dataframe_args)
+
+    selected_rows = event.selection.rows
+    if not selected_rows:
+        return None
+    row_number = selected_rows[0]
+    if not isinstance(row_number, int) or not 0 <= row_number < len(table):
+        return None
+    code, name = stock_identity_from_row(table.iloc[row_number])
+    if not code:
+        st.warning("選択した行の銘柄コードを読み取れませんでした。")
+        return None
+    if show_chart:
+        render_selected_daily_chart(code, name, key)
+    return code
+
+
 def rsi_chart(h):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=h.index, y=h["RSI14"], mode="lines", name="RSI14"))
@@ -853,7 +932,11 @@ u = st.session_state.universe
 performed_scan = False
 if u is not None and not u.empty:
     with st.expander("保存中の銘柄を確認"):
-        st.dataframe(u.head(100), hide_index=True, use_container_width=True)
+        render_clickable_stock_table(
+            u,
+            key="saved_universe_stocks",
+            height=650,
+        )
     items = tuple((r["コード"], r["銘柄名"]) for _, r in u.iterrows())
     if run_now or st.session_state.scan_results is None:
         with st.spinner(f"保存済み{len(items)}銘柄を分析中…"):
@@ -1081,10 +1164,9 @@ if st.session_state.scan_results is not None:
                         "5日線上抜け": row["5日線上抜け"],
                         "パラボリック": row["パラボリック判定"],
                     })
-                st.dataframe(
+                render_clickable_stock_table(
                     pd.DataFrame(count_rows),
-                    hide_index=True,
-                    width="stretch",
+                    key="decline_candidate_stocks",
                     height=min(72 + 35 * len(count_rows), 700),
                     column_config={
                         "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
@@ -1096,21 +1178,19 @@ if st.session_state.scan_results is not None:
 
             with st.expander(f"全{len(all_count_rows)}銘柄の現在カウントを見る"):
                 st.caption("買い候補以外も含め、分析できた全銘柄を現在カウントの大きい順に表示します。")
-                st.dataframe(
+                render_clickable_stock_table(
                     pd.DataFrame(all_count_rows),
-                    hide_index=True,
-                    width="stretch",
+                    key="all_decline_count_stocks",
                     height=650,
                 )
 
             if decline_add_candidates:
                 with st.expander(f"追加買いの目安（{decline_add_count}本以上・{len(decline_add_candidates)}件）"):
-                    st.dataframe(
+                    render_clickable_stock_table(
                         pd.DataFrame(decline_add_candidates)[
                             ["コード", "銘柄名", "下げ日数", "下げカウント状態", "下げ判定日", "下げ追加到達日", "現在値", "RSI14"]
                         ],
-                        hide_index=True,
-                        width="stretch",
+                        key="decline_add_candidate_stocks",
                     )
 
             progression_source = decline_candidates or sorted(
@@ -1144,10 +1224,9 @@ if st.session_state.scan_results is not None:
                             progression_frames.append(frame)
                     if progression_frames:
                         with st.expander("テスト確認用：直近40日足のカウント推移", expanded=True):
-                            st.dataframe(
+                            render_clickable_stock_table(
                                 pd.concat(progression_frames, ignore_index=True),
-                                hide_index=True,
-                                width="stretch",
+                                key="decline_progression_stocks",
                                 column_config={
                                     "終値": st.column_config.NumberColumn(format="¥%,.1f"),
                                     "判定価格": st.column_config.NumberColumn(format="¥%,.1f"),
@@ -1171,10 +1250,9 @@ if st.session_state.scan_results is not None:
                     "BB下限乖離%", "BB位置σ", "RSI14", "下げ日数",
                     "5日線上抜け", "パラボリック判定", "反転確認",
                 ]]
-                st.dataframe(
+                render_clickable_stock_table(
                     bb_rows,
-                    hide_index=True,
-                    width="stretch",
+                    key="bb_lower_candidate_stocks",
                     height=min(72 + 35 * len(bb_rows), 700),
                     column_config={
                         "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
@@ -1198,11 +1276,18 @@ if st.session_state.scan_results is not None:
                     "出来高倍率", "包み陽線", "下ヒゲ陽線"]
             if buy:
                 buy_table = pd.DataFrame(buy)[cols].head(50)
-                st.dataframe(buy_table.style.apply(highlight_buy_score, axis=1),
-                             hide_index=True, use_container_width=True)
+                render_clickable_stock_table(
+                    buy_table,
+                    key="baseline_buy_candidate_stocks",
+                    style_func=highlight_buy_score,
+                )
                 labels = [f"{r['コード']} {r['銘柄名']}" for r in buy[:20]]
-                selected = st.selectbox("🔎 上位候補の詳細を見る", labels, key="buy_detail")
-                if selected:
+                selected = st.selectbox(
+                    "総合分析も見る",
+                    ["選択してください", *labels],
+                    key="buy_detail",
+                )
+                if selected != "選択してください":
                     code = selected.split()[0]
                     row = next(r for r in buy if r["コード"] == code)
                     with st.spinner(f"{code} の詳細分析中…"):
@@ -1234,10 +1319,9 @@ if st.session_state.scan_results is not None:
                     if column not in rotation_df.columns:
                         rotation_df[column] = default
                 rotation_df.insert(0, "順位", range(1, len(rotation_df) + 1))
-                st.dataframe(
+                render_clickable_stock_table(
                     rotation_df[["順位", "初動段階", "業種・テーマ", "業種判定", "コード", "銘柄名", "初動理由", "翌朝の扱い", "過熱判定", "5日線上抜け", "5日線乖離%", "過去5回登場", "前回順位", "順位変化", "5日加速pt", "循環点", "現在値", "1日%", "5日%", "20日%"]],
-                    hide_index=True,
-                    width="stretch",
+                    key="rotation_candidate_stocks",
                     column_config={
                         "循環点": st.column_config.NumberColumn(format="%.1f"),
                         "現在値": st.column_config.NumberColumn(format="¥%,.1f"),
@@ -1248,26 +1332,6 @@ if st.session_state.scan_results is not None:
                         "5日線乖離%": st.column_config.NumberColumn(format="%+.2f%%"),
                     },
                 )
-                rotation_by_label = {
-                    f"{row['コード']} {row['銘柄名']}（{row['業種・テーマ']}）": row
-                    for row in rotation_patterns
-                }
-                selected_rotation = st.selectbox(
-                    "循環候補のチャートを見る",
-                    list(rotation_by_label),
-                    key="rotation_candidate_detail",
-                )
-                if selected_rotation:
-                    rotation_row = rotation_by_label[selected_rotation]
-                    h = detail_history(rotation_row["コード"], "日足")
-                    if h.empty:
-                        st.warning("この銘柄のチャートデータを取得できませんでした。")
-                    else:
-                        st.plotly_chart(
-                            price_chart(h.tail(TIMEFRAME_CONFIG["日足"]["bars"]), "日足"),
-                            width="stretch",
-                            config={"displayModeBar": False},
-                        )
                 st.page_link("pages/3_市場環境社員.py", label="業種全体とチャートを確認")
             else:
                 st.info("本日は、表示できる循環セクター参考銘柄はありません。")
@@ -1279,7 +1343,10 @@ if st.session_state.scan_results is not None:
                 cols = ["コード", "銘柄名", "空売り総合評価", "空売り状態", "予想PER", "信用倍率",
                         "貸借確認", "空売りスコア", "空売りファンダ", "RSI14", "一目位置",
                         "転換線下抜け", "包み陰線", "出来高倍率", "空売り理由"]
-                st.dataframe(pd.DataFrame(short)[cols].head(20), hide_index=True, use_container_width=True)
+                render_clickable_stock_table(
+                    pd.DataFrame(short)[cols].head(20),
+                    key="short_candidate_stocks",
+                )
             else:
                 st.info("現在、日足の下降トレンド条件を満たす信用売り候補はありません。")
             st.warning("発注前にSBIで売建可能数・貸株料・逆日歩・決算日を必ず確認してください。Stocknoteは自動発注しません。")
@@ -1288,11 +1355,16 @@ if st.session_state.scan_results is not None:
             st.write("上位候補をテクニカル・ファンダメンタル・市場環境の3社員で再評価します。")
             if st.button("👥 上位5銘柄をAI社員会議で再評価", use_container_width=True):
                 st.markdown("#### 買い会議")
-                st.dataframe(meeting_rows(buy, "buy", market_score), hide_index=True, use_container_width=True)
+                render_clickable_stock_table(
+                    meeting_rows(buy, "buy", market_score),
+                    key="meeting_buy_stocks",
+                )
                 st.markdown("#### 空売り会議")
                 if short:
-                    st.dataframe(pd.DataFrame(short)[["コード", "銘柄名", "空売り総合評価", "空売り状態", "予想PER", "信用倍率", "空売り理由"]].head(5),
-                                 hide_index=True, use_container_width=True)
+                    render_clickable_stock_table(
+                        pd.DataFrame(short)[["コード", "銘柄名", "空売り総合評価", "空売り状態", "予想PER", "信用倍率", "空売り理由"]].head(5),
+                        key="meeting_short_stocks",
+                    )
                 else:
                     st.info("信用売り会議の対象はありません。")
 
@@ -1354,10 +1426,9 @@ if st.session_state.scan_results is not None:
                         "final_return_pct": "5日損益%",
                         "max_drawdown_pct": "最大DD%",
                     })
-                    st.dataframe(
+                    render_clickable_stock_table(
                         event_table[["コード", "銘柄名", "本数", "シグナル日", "買値", "5日以内上昇", "5日損益%", "最大DD%"]],
-                        hide_index=True,
-                        width="stretch",
+                        key="backtest_signal_stocks",
                     )
 
     if bad:
