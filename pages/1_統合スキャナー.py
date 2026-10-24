@@ -767,8 +767,11 @@ def render_clickable_stock_table(
     selected_rows = event.selection.rows
     if not selected_rows:
         return None
-    row_number = selected_rows[0]
-    if not isinstance(row_number, int) or not 0 <= row_number < len(table):
+    try:
+        row_number = int(selected_rows[0])
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= row_number < len(table):
         return None
     code, name = stock_identity_from_row(table.iloc[row_number])
     if not code:
