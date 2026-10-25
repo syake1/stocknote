@@ -683,9 +683,79 @@ def detail_history(code, timeframe="日足"):
     return h
 
 
+WEEKLY_SHADOW_STYLE = {
+    "上向き": {"fill": "#ef4444", "badge": "rgba(239, 68, 68, 0.18)", "label": "買い候補"},
+    "下向き": {"fill": "#3b82f6", "badge": "rgba(59, 130, 246, 0.18)", "label": "空売り候補"},
+    "横ばい": {"fill": "#94a3b8", "badge": "rgba(148, 163, 184, 0.18)", "label": "様子見"},
+}
+
+
+def weekly_trend_shadow(h):
+    """Map the last confirmed weekly trend to each daily bar without look-ahead."""
+    if h.empty or "Close" not in h.columns or not isinstance(h.index, pd.DatetimeIndex):
+        return pd.Series(dtype="object")
+
+    close = pd.to_numeric(h["Close"], errors="coerce").dropna().sort_index()
+    if close.empty:
+        return pd.Series(dtype="object")
+
+    weekly_close = close.resample("W-FRI").last().dropna()
+    weekly_ma13 = weekly_close.rolling(13, min_periods=13).mean()
+    weekly_slope = weekly_ma13.diff()
+    weekly_state = pd.Series("横ばい", index=weekly_close.index, dtype="object")
+    weekly_state[(weekly_close > weekly_ma13) & (weekly_slope > 0)] = "上向き"
+    weekly_state[(weekly_close < weekly_ma13) & (weekly_slope < 0)] = "下向き"
+
+    daily_state = weekly_state.reindex(h.index, method="ffill").fillna("横ばい")
+    daily_state.index = h.index
+    return daily_state
+
+
+def add_weekly_shadow(fig, h):
+    states = weekly_trend_shadow(h)
+    if states.empty:
+        return
+
+    start = 0
+    for position in range(1, len(states) + 1):
+        if position < len(states) and states.iloc[position] == states.iloc[start]:
+            continue
+        state = states.iloc[start]
+        x0 = h.index[start]
+        x1 = h.index[position] if position < len(h) else h.index[-1] + pd.Timedelta(days=1)
+        fig.add_vrect(
+            x0=x0,
+            x1=x1,
+            fillcolor=WEEKLY_SHADOW_STYLE[state]["fill"],
+            opacity=0.055 if state != "横ばい" else 0.025,
+            layer="below",
+            line_width=0,
+        )
+        start = position
+
+    current = states.iloc[-1]
+    fig.add_annotation(
+        x=0.01,
+        y=0.99,
+        xref="paper",
+        yref="paper",
+        text=f"週足の影: {WEEKLY_SHADOW_STYLE[current]['label']}（{current}・13週線）",
+        showarrow=False,
+        xanchor="left",
+        yanchor="top",
+        bgcolor=WEEKLY_SHADOW_STYLE[current]["badge"],
+        bordercolor=WEEKLY_SHADOW_STYLE[current]["fill"],
+        borderwidth=1,
+        borderpad=5,
+        font=dict(size=12),
+    )
+
+
 def price_chart(h, timeframe):
     windows = TIMEFRAME_CONFIG[timeframe]["windows"]
     fig = go.Figure()
+    if timeframe == "日足":
+        add_weekly_shadow(fig, h)
     fig.add_trace(go.Candlestick(
         x=h.index, open=h["Open"], high=h["High"], low=h["Low"], close=h["Close"], name="株価",
         increasing_line_color="#ef4444", increasing_fillcolor="#ef4444",
