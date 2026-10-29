@@ -102,11 +102,11 @@
     "name": "牧野フライス製作所",
     "first_seen_at": "2026-10-27T11:06:10+09:00",
     "first_price": 3055.0,
-    "last_detected_at": "2026-10-27T11:06:10+09:00",
-    "updated_at": "2026-10-27T11:06:10+09:00",
-    "elapsed_days": 0,
-    "current_price": 3055.0,
-    "return_pct": 0.0,
+    "last_detected_at": "2026-10-29T14:40:00+09:00",
+    "updated_at": "2026-10-29T14:40:00+09:00",
+    "elapsed_days": 2,
+    "current_price": 3065.0,
+    "return_pct": 0.3273322422258529,
     "status": "新規候補",
     "previous_status": null,
     "snapshots": [
@@ -169,14 +169,14 @@
         "psar_bar_time": null
       }
     ],
-    "rsi": 35.260115606936424,
-    "bb_position": -1.2165176747095836,
-    "volume_ratio": 0.20987793626666842,
-    "score": 59.97430392742844,
-    "technical_score": 51.21787990928554,
+    "rsi": 34.28571428571429,
+    "bb_position": -1.159770021449097,
+    "volume_ratio": 0.3934486833332233,
+    "score": 61.12521899512217,
+    "technical_score": 52.65652374390271,
     "fundamental_score": 95.0,
     "fundamental_available": 7.0,
-    "ma75_distance_pct": 0.001745802436259325,
+    "ma75_distance_pct": 0.2293447976664309,
     "cloud_position": "雲の上",
     "trend_reason": "上昇基調の押し目対象",
     "tenkan_above_kijun": false,
@@ -193,7 +193,7 @@
     "cloud_top": 3014.0,
     "cloud_bottom": 2912.0,
     "tenkan": 3170.0,
-    "kijun": 3196.0
+    "kijun": 3200.0
   },
   {
     "code": "5892",
