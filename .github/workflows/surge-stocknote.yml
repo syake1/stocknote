@@ -1,0 +1,58 @@
+name: Stocknote 東証全市場・朝成候補
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub cron is UTC. 平日05:20 JSTに前営業日までの確定日足を検証する。
+    - cron: '20 20 * * 0-4'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stocknote-candidate-data
+  cancel-in-progress: false
+
+jobs:
+  all-market-surge-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      TZ: Asia/Tokyo
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      SURGE_SEND_DISCORD: '1'
+      SURGE_BATCH_SIZE: '80'
+      SURGE_RESULT_LIMIT: '100'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Validate surge scanner
+        run: python -m py_compile all_market_surge_scan.py stocknote_surge.py
+
+      - name: Scan all TSE operating companies and notify Discord
+        run: python all_market_surge_scan.py
+
+      - name: Persist universe, validation and candidates
+        run: |
+          if [ -n "$(git status --porcelain data/)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data
+            git commit -m "Update all-market surge candidates"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No surge data changes"
+          fi
