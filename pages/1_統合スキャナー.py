@@ -35,7 +35,12 @@ from stocknote_technicals import (
     daily_trend_context,
     quarterly_strength_context,
 )
-from stocknote_short import assess_short, number
+from stocknote_short import assess_short, number, short_watch_reason
+from stocknote_surge import (
+    load_surge_backtest,
+    load_surge_candidates,
+    market_order_decision,
+)
 from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
 from stocknote_rotation_history import analyze_rotation_patterns, load_rotation_history
 
@@ -1122,8 +1127,20 @@ if st.session_state.scan_results is not None:
         monitored = sorted([r for r in buy_pre if r.get("買い対象")],
                            key=lambda x: x["総合買い評価"], reverse=True)
         buy = monitored
-        short_pre = sorted([r for r in ok if r.get("空売りトレンド適合")],
-                           key=lambda x: x["空売りスコア"], reverse=True)[:20]
+        short_watch_pre = []
+        for row in ok:
+            watch_reason = short_watch_reason(row)
+            if watch_reason:
+                row["空売り監視理由"] = watch_reason
+                short_watch_pre.append(row)
+        short_pre = sorted(
+            short_watch_pre,
+            key=lambda row: (
+                bool(row.get("空売りトレンド適合")),
+                float(row.get("空売りスコア") or 0.0),
+            ),
+            reverse=True,
+        )[:30]
         if performed_scan:
             new_candidates = []
             for r in monitored:
@@ -1180,12 +1197,27 @@ if st.session_state.scan_results is not None:
             for r in short_pre:
                 f = fundamental_employee(r["コード"])
                 r.update(assess_short(r, f, universe_by_code.get(str(r["コード"]), {}), market_score))
+                if r.get("空売りトレンド適合") and r["空売り状態"] in {"空売り条件到達", "空売り条件接近"}:
+                    r["空売り区分"] = "実行候補"
+                elif r.get("空売りトレンド適合"):
+                    r["空売り区分"] = "本命監視"
+                else:
+                    r["空売り区分"] = "早期監視"
+                    if r["空売り状態"] == "トレンド条件外":
+                        r["空売り状態"] = "早期監視（長期下降待ち）"
                 short.append(r)
-        short.sort(key=lambda x: x["空売り総合評価"], reverse=True)
+        short.sort(
+            key=lambda row: (
+                row.get("空売り区分") == "実行候補",
+                row.get("空売り区分") == "本命監視",
+                float(row.get("空売り総合評価") or 0.0),
+            ),
+            reverse=True,
+        )
         st.info(f"市場環境社員: {regime}  {market_score:.0f}/100　{market_note}")
 
-        tab_buy, tab_rotation, tab_short, tab_meeting, tab_decline_bt = st.tabs(
-            ["📈 買い候補", "🔁 循環セクター（参考）", "📉 空売り候補", "👥 AI社員会議", "下げ日数バックテスト"]
+        tab_buy, tab_surge, tab_rotation, tab_short, tab_meeting, tab_decline_bt = st.tabs(
+            ["📈 買い候補", "🚀 急騰初動（全市場）", "🔁 循環セクター（参考）", "📉 空売り候補", "👥 AI社員会議", "下げ日数バックテスト"]
         )
         with tab_buy:
             st.subheader(f"下げ日数カウンター買い候補（{count_min}〜{count_max}本目）")
@@ -1368,6 +1400,129 @@ if st.session_state.scan_results is not None:
             else:
                 st.info("現在、10月9日基準の押し目条件を満たす銘柄はありません。")
 
+        with tab_surge:
+            st.subheader("東証全市場・翌朝成行候補")
+            st.caption(
+                "JPX公式のプライム・スタンダード・グロース全銘柄を早朝に一括走査します。"
+                "前日の終値までで判定し、翌営業日の始値で購入した過去検証が合格した条件だけを朝成候補にします。"
+            )
+            st.warning(
+                "注文は自動送信しません。SBIの寄付き気配が前日終値より3%以上高い場合、"
+                "または5%以上安い場合は成行見送りです。"
+            )
+            surge_rows, surge_meta = load_surge_candidates()
+            surge_backtest = load_surge_backtest()
+            if surge_meta:
+                updated_at = surge_meta.get("updated_at", "不明")
+                scanned_count = int(surge_meta.get("scanned", 0) or 0)
+                failed_count = int(surge_meta.get("failed", 0) or 0)
+                st.caption(
+                    f"全市場スキャン更新: {updated_at} / 対象 {scanned_count:,}銘柄 / "
+                    f"株価取得失敗 {failed_count:,}銘柄"
+                )
+                try:
+                    updated = pd.Timestamp(updated_at)
+                    if updated.tzinfo is None:
+                        updated = updated.tz_localize("Asia/Tokyo")
+                    else:
+                        updated = updated.tz_convert("Asia/Tokyo")
+                    age_hours = (pd.Timestamp.now(tz="Asia/Tokyo") - updated).total_seconds() / 3600
+                    if age_hours > 36:
+                        st.error("検証データが36時間以上更新されていません。朝成候補として使用しないでください。")
+                except Exception:
+                    st.warning("全市場スキャンの更新時刻を確認できません。")
+
+            if not surge_backtest.empty:
+                st.markdown("#### 朝成りバックテスト")
+                st.caption(
+                    "前日終値で初動を判定し、翌営業日の始値で成行購入、5営業日後の終値で比較しています。"
+                    "同一銘柄の重複シグナルは5営業日空けています。"
+                )
+                st.dataframe(
+                    surge_backtest,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "5日勝率%": st.column_config.NumberColumn(format="%.1f%%"),
+                        "5日平均損益%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "5日中央値%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "5日以内+5%到達率": st.column_config.NumberColumn(format="%.1f%%"),
+                        "平均最大DD%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "最大DD%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    },
+                )
+
+            verification_passed = bool(surge_meta and surge_meta.get("verification_passed"))
+            threshold = surge_meta.get("verified_threshold") if surge_meta else None
+            if verification_passed:
+                st.success(f"朝成り検証合格：基礎点 {threshold}点以上を『朝成候補』として表示します。")
+            elif surge_meta:
+                st.error("朝成り検証は基準未達です。本日は『朝成候補』を出さず、監視だけにします。")
+            else:
+                st.info("全市場スキャンの初回実行待ちです。GitHub Actionsの完了後に結果が表示されます。")
+
+            if not surge_rows.empty:
+                display_columns = [
+                    "コード", "銘柄名", "市場", "業種", "判定", "急騰初動点", "判定日",
+                    "終値", "前日比%", "5日%", "出来高倍率", "売買代金億円",
+                    "20日高値距離%", "5日線上抜け", "週足", "理由", "翌朝の扱い",
+                ]
+                display_columns = [column for column in display_columns if column in surge_rows.columns]
+                render_clickable_stock_table(
+                    surge_rows[display_columns],
+                    key="all_market_surge_stocks",
+                    height=min(72 + 35 * len(surge_rows), 700),
+                    column_config={
+                        "急騰初動点": st.column_config.NumberColumn(format="%.1f"),
+                        "終値": st.column_config.NumberColumn(format="¥%,.1f"),
+                        "前日比%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "5日%": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "出来高倍率": st.column_config.NumberColumn(format="%.2f倍"),
+                        "売買代金億円": st.column_config.NumberColumn(format="%.1f億円"),
+                        "20日高値距離%": st.column_config.NumberColumn(format="%+.2f%%"),
+                    },
+                )
+
+                morning_rows = surge_rows[surge_rows["判定"].eq("朝成候補")]
+                st.markdown("#### SBI寄付き気配の最終確認")
+                if morning_rows.empty:
+                    st.info("現在、バックテストを通過した朝成候補はありません。")
+                else:
+                    morning_by_label = {
+                        f"{row['コード']} {row['銘柄名']}": row
+                        for row in morning_rows.to_dict("records")
+                    }
+                    selected_label = st.selectbox(
+                        "気配値を確認する朝成候補",
+                        list(morning_by_label),
+                        key="surge_opening_check_stock",
+                    )
+                    selected_row = morning_by_label[selected_label]
+                    indicative_price = st.number_input(
+                        "SBIの寄付き気配値",
+                        min_value=0.0,
+                        value=0.0,
+                        step=1.0,
+                        key="surge_indicative_price",
+                    )
+                    decision, opening_gap = market_order_decision(
+                        indicative_price,
+                        selected_row["前日終値"],
+                    )
+                    if opening_gap is None:
+                        st.info(
+                            f"前日終値 ¥{float(selected_row['前日終値']):,.1f}。"
+                            "SBIの気配値を入力すると成行可否を表示します。"
+                        )
+                    elif decision == "成行条件内":
+                        st.success(f"成行条件内：気配ギャップ {opening_gap:+.2f}%")
+                    else:
+                        st.error(f"{decision}：気配ギャップ {opening_gap:+.2f}%")
+            elif surge_meta:
+                st.info("今回の全市場スキャンでは、監視条件を満たす急騰初動銘柄はありません。")
+
+            st.markdown("[JPX公式・東証上場銘柄一覧](https://www.jpx.co.jp/markets/statistics-equities/misc/01.html)")
+
         with tab_rotation:
             st.subheader("循環セクターの参考表示")
             st.caption("業種の資金の向きを確認する表です。この銘柄順位は買い候補やDiscord通知には使いません。")
@@ -1410,18 +1565,28 @@ if st.session_state.scan_results is not None:
                 st.info("本日は、表示できる循環セクター参考銘柄はありません。")
 
         with tab_short:
-            st.subheader("信用売り総合ランキング")
-            st.caption("下降トレンド・割高/業績・信用倍率・市場環境を総合評価します。信用情報がない銘柄は実行候補にしません。")
+            st.subheader("空売り候補・早期監視ランキング")
+            st.caption(
+                "5日・25日線割れや転換線下抜けを早期監視に出し、長期下降トレンドと"
+                "SBI信用データまで確認できた銘柄だけを実行候補にします。"
+            )
             if short:
-                cols = ["コード", "銘柄名", "空売り総合評価", "空売り状態", "予想PER", "信用倍率",
+                execution_count = sum(row.get("空売り区分") == "実行候補" for row in short)
+                core_watch_count = sum(row.get("空売り区分") == "本命監視" for row in short)
+                early_watch_count = sum(row.get("空売り区分") == "早期監視" for row in short)
+                st.info(
+                    f"実行候補 {execution_count}銘柄 / 本命監視 {core_watch_count}銘柄 / "
+                    f"早期監視 {early_watch_count}銘柄"
+                )
+                cols = ["コード", "銘柄名", "空売り区分", "空売り総合評価", "空売り状態", "予想PER", "信用倍率",
                         "貸借確認", "空売りスコア", "空売りファンダ", "RSI14", "一目位置",
-                        "転換線下抜け", "包み陰線", "出来高倍率", "空売り理由"]
+                        "転換線下抜け", "包み陰線", "出来高倍率", "空売り監視理由", "空売り理由"]
                 render_clickable_stock_table(
-                    pd.DataFrame(short)[cols].head(20),
+                    pd.DataFrame(short)[cols].head(30),
                     key="short_candidate_stocks",
                 )
             else:
-                st.info("現在、日足の下降トレンド条件を満たす信用売り候補はありません。")
+                st.info("現在、空売りの早期監視条件を満たす銘柄はありません。")
             st.warning("発注前にSBIで売建可能数・貸株料・逆日歩・決算日を必ず確認してください。Stocknoteは自動発注しません。")
 
         with tab_meeting:
