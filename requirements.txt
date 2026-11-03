@@ -8,3 +8,4 @@ plotly
 altair
 curl_cffi
 deep-translator
+openpyxl

@@ -81,6 +81,45 @@ def credit_score(ratio):
     return 65.0
 
 
+def short_watch_reason(technical):
+    """Return an early-watch reason before the full long-term downtrend is complete."""
+    price = number(technical.get("現在値"))
+    ma5 = number(technical.get("MA5"))
+    ma25 = number(technical.get("MA25"))
+    ma75 = number(technical.get("MA75"))
+    rsi = number(technical.get("RSI14"))
+    score = number(technical.get("空売りスコア")) or 0.0
+    if price is None or ma5 is None or ma25 is None:
+        return None
+    reasons = []
+    if technical.get("空売りトレンド適合"):
+        reasons.append("長期下降トレンド")
+    if price < ma5 and price < ma25:
+        reasons.append("5日・25日線の下")
+    elif price < ma5:
+        reasons.append("5日線割れ")
+    if technical.get("転換線下抜け"):
+        reasons.append("転換線下抜け")
+    if technical.get("包み陰線") or technical.get("上ヒゲ陰線"):
+        reasons.append("弱いローソク足")
+    if ma75 is not None and price < ma75:
+        reasons.append("75日線の下")
+    if rsi is not None and rsi >= 60 and price < ma5:
+        reasons.append("高RSIから失速")
+    if score >= 45:
+        reasons.append("空売り点45以上")
+
+    early_trigger = bool(
+        technical.get("空売りトレンド適合")
+        or technical.get("転換線下抜け")
+        or technical.get("包み陰線")
+        or technical.get("上ヒゲ陰線")
+        or (price < ma5 and price < ma25)
+        or (rsi is not None and rsi >= 60 and price < ma5)
+    )
+    return "・".join(dict.fromkeys(reasons)) if early_trigger and reasons else None
+
+
 def assess_short(technical, fundamental, universe_row, market_score):
     per_csv = first_value(universe_row, ["PER(株価収益率)(予)(倍)", "予想PER", "PER", "PER(倍)"])
     ratio_raw = first_value(universe_row, ["信用倍率", "信用倍率(倍)", "信用取引倍率", "貸借倍率"])
