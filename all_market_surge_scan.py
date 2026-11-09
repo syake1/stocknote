@@ -64,10 +64,20 @@ def download_batch(items):
 
 def build_discord_message(candidates, summary, threshold, scanned, failed):
     now = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y/%m/%d %H:%M")
-    lines = [f"🚀 **Stocknote 東証全市場・翌朝成行候補**  {now}"]
+    lines = [f"🚀 **Stocknote 東証全市場・急騰初動**  {now}"]
     lines.append(f"東証全市場 {scanned}銘柄を検証 / 株価取得失敗 {failed}銘柄")
     if threshold is None:
-        lines.append("⚠️ バックテスト基準未達のため、朝成候補は出しません。監視のみです。")
+        lines.append("⚠️ 朝成バックテストは基準未達です。成行買いサインは出さず、初動監視だけを表示します。")
+        if not summary.empty:
+            best = summary.sort_values(
+                ["5日平均損益%", "5日勝率%"], ascending=False
+            ).iloc[0]
+            lines.append(
+                f"現在の最良: {int(best['基準点'])}点 / {int(best['件数'])}件"
+                f" / 5日勝率 {best['5日勝率%']:.1f}%"
+                f" / 平均 {best['5日平均損益%']:+.2f}%"
+                "（合格目安: 勝率55%以上・平均+0.50%以上）"
+            )
     else:
         selected = summary[summary["基準点"].eq(threshold)].iloc[0]
         lines.append(
@@ -78,6 +88,16 @@ def build_discord_message(candidates, summary, threshold, scanned, failed):
     morning = candidates[candidates["判定"].eq("朝成候補")].head(10) if not candidates.empty else pd.DataFrame()
     if morning.empty:
         lines.append("本日の検証済み朝成候補はありません。")
+        watch = candidates[candidates["判定"].eq("監視")].head(5) if not candidates.empty else pd.DataFrame()
+        if not watch.empty:
+            lines.append("📋 **急騰初動・監視上位（買いサインではありません）**")
+            for rank, row in enumerate(watch.to_dict("records"), 1):
+                lines.append(
+                    f"{rank}. **{row['コード']} {row['銘柄名']}**  {row['急騰初動点']:.1f}点"
+                    f" / {row['業種']} / 前日比 {row['前日比%']:+.2f}%"
+                    f" / 出来高 {row['出来高倍率']:.1f}倍"
+                )
+            lines.append("寄付き直後の飛びつきは禁止。5日線維持を確認して監視します。")
     else:
         lines.append("SBIの寄付き気配が前日終値比+3%以上なら成行見送りです。")
         for rank, row in enumerate(morning.to_dict("records"), 1):
