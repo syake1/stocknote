@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+from all_market_surge_scan import build_discord_message
 from stocknote_surge import (
     historical_market_order_events,
     market_order_decision,
@@ -111,3 +112,43 @@ def test_historical_events_use_next_session_open():
     for event in events:
         signal_index = history.index.get_loc(pd.Timestamp(event["シグナル日"]))
         assert event["成行価格"] == history.iloc[signal_index + 1]["Open"]
+
+
+def test_discord_message_shows_watchlist_when_backtest_is_unverified():
+    candidates = pd.DataFrame([
+        {
+            "コード": "4091",
+            "銘柄名": "日本酸素ＨＤ",
+            "業種": "化学",
+            "判定": "監視",
+            "急騰初動点": 93.7,
+            "前日比%": 5.31,
+            "出来高倍率": 3.8,
+        },
+        {
+            "コード": "9201",
+            "銘柄名": "日本航空",
+            "業種": "空運業",
+            "判定": "監視",
+            "急騰初動点": 81.2,
+            "前日比%": 4.85,
+            "出来高倍率": 2.4,
+        },
+    ])
+    summary = pd.DataFrame([{
+        "基準点": 75,
+        "件数": 609,
+        "5日勝率%": 51.7,
+        "5日平均損益%": 0.72,
+        "5日以内+5%到達率": 34.0,
+    }])
+
+    message = build_discord_message(candidates, summary, None, 3686, 1)
+
+    assert "東証全市場・急騰初動" in message
+    assert "成行買いサインは出さず" in message
+    assert "現在の最良: 75点 / 609件" in message
+    assert "急騰初動・監視上位" in message
+    assert "4091 日本酸素ＨＤ" in message
+    assert "9201 日本航空" in message
+    assert "買いサインではありません" in message
