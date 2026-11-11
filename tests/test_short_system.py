@@ -1,6 +1,15 @@
 import unittest
 
-from stocknote_short import assess_short, credit_score, short_fundamental_score, short_watch_reason
+import numpy as np
+import pandas as pd
+
+from stocknote_short import (
+    assess_short,
+    credit_score,
+    short_fundamental_score,
+    short_technical_snapshot,
+    short_watch_reason,
+)
 
 
 class ShortSystemTests(unittest.TestCase):
@@ -62,6 +71,25 @@ class ShortSystemTests(unittest.TestCase):
             "空売りトレンド適合": False,
         })
         self.assertIsNone(reason)
+
+    def test_daily_snapshot_produces_short_watch_fields(self):
+        index = pd.date_range("2025-01-01", periods=260, freq="B")
+        close = np.concatenate([
+            np.linspace(150, 105, 250),
+            np.array([108, 107, 106, 105, 104, 103, 102, 101, 100, 98]),
+        ])
+        frame = pd.DataFrame({
+            "Open": close + 1.0,
+            "High": close + 2.0,
+            "Low": close - 2.0,
+            "Close": close,
+            "Volume": np.full(len(close), 100000),
+        }, index=index)
+        result = short_technical_snapshot("1234", "テスト", frame)
+        self.assertIsNotNone(result)
+        self.assertIn("空売りスコア", result)
+        self.assertIn("空売りトレンド適合", result)
+        self.assertLess(result["現在値"], result["MA25"])
 
 
 if __name__ == "__main__":

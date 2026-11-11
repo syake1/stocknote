@@ -60,3 +60,34 @@ def test_morning_and_night_meeting_labels_are_distinct():
     assert "Stocknote 夜の会議（翌日候補）" in night
     assert "候補はありません" in morning
     assert "候補はありません" in night
+
+
+def test_rotation_message_always_names_sectors_and_stocks():
+    sectors = [{
+        "業種・テーマ": "小売・内需", "判定": "循環初動",
+        "1日%": 0.8, "5日%": -0.4, "初動点": 78,
+    }]
+    candidates = [{
+        "コード": "8267", "銘柄名": "イオン", "業種・テーマ": "小売・内需",
+        "扱い": "先回り監視・5日線付近", "1日%": 0.9,
+    }]
+    message = morning_scan.build_rotation_discord_message(
+        sectors, candidates, now="2026/11/12 05:00"
+    )
+    assert "本日の循環セクター" in message
+    assert "小売・内需" in message
+    assert "8267 イオン" in message
+
+
+def test_short_message_shows_watchlist_without_credit_confirmation():
+    rows = [{
+        "コード": "1234", "銘柄名": "テスト", "空売り区分": "本命監視",
+        "空売り総合評価": 67.5, "RSI14": 62, "出来高倍率": 1.8,
+        "空売り監視理由": "5日線割れ", "貸借確認": None,
+    }]
+    message = morning_scan.build_short_discord_message(
+        rows, 786, now="2026/11/12 05:00"
+    )
+    assert "信用売り候補・監視" in message
+    assert "1234 テスト" in message
+    assert "SBIの売建可否を未確認" in message

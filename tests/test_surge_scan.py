@@ -148,7 +148,7 @@ def test_discord_message_shows_watchlist_when_backtest_is_unverified():
     assert "東証全市場・急騰初動" in message
     assert "成行買いサインは出さず" in message
     assert "現在の最良: 75点 / 609件" in message
-    assert "急騰初動・監視上位" in message
+    assert "翌朝の買い検討・監視上位" in message
     assert "4091 日本酸素ＨＤ" in message
     assert "9201 日本航空" in message
-    assert "買いサインではありません" in message
+    assert "最終買いサイン前" in message
