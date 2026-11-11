@@ -15,6 +15,8 @@ import yfinance as yf
 
 from monitor_candidates import notify
 from stocknote_fundamentals import get_fundamentals
+from stocknote_holding_analysis import market_score as current_market_score
+from stocknote_short import assess_short, short_technical_snapshot, short_watch_reason
 from stocknote_tracking import filter_new_notifications, merge_new_candidates
 from stocknote_technicals import baseline_pullback_zone, daily_trend_context
 from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
@@ -29,6 +31,8 @@ MIN_SCORE = float(os.getenv("STOCKNOTE_MIN_BUY_SCORE", "0"))
 ENTRY_RULE_VERSION = 5
 MIN_FUNDAMENTAL_SCORE = float(os.getenv("STOCKNOTE_MIN_FUNDAMENTAL_SCORE", "40"))
 FUNDAMENTAL_POOL = int(os.getenv("STOCKNOTE_FUNDAMENTAL_POOL", "20"))
+SHORT_TOP_N = int(os.getenv("STOCKNOTE_SHORT_TOP_N", "5"))
+SHORT_POOL = int(os.getenv("STOCKNOTE_SHORT_POOL", "12"))
 
 
 def normalize_code(value):
@@ -77,9 +81,15 @@ def add_fundamental_judgement(row, fundamentals):
     return result
 
 
-def score_one(code, name):
-    h = yf.download(f"{code}.T", period="14mo", interval="1d", auto_adjust=False,
-                    progress=False, threads=False)
+def download_daily_history(code):
+    return yf.download(
+        f"{code}.T", period="14mo", interval="1d", auto_adjust=False,
+        progress=False, threads=False,
+    )
+
+
+def score_one(code, name, hist=None):
+    h = hist if hist is not None else download_daily_history(code)
     if isinstance(h.columns, pd.MultiIndex):
         h.columns = h.columns.get_level_values(0)
     if h.empty or "Close" not in h or len(h) < 205:
@@ -208,19 +218,85 @@ def post_discord(rows, total):
     resp.raise_for_status()
 
 
-def update_rotation_ranking():
-    """Save sector history for reference without creating buy notifications."""
+def post_discord_text(text):
+    print(text)
+    if not WEBHOOK:
+        print("DISCORD_WEBHOOK is not configured; skipping Discord post.")
+        return
+    resp = requests.post(WEBHOOK, json={"content": text[:1950]}, timeout=20)
+    resp.raise_for_status()
+
+
+def build_rotation_discord_message(sector_rows, candidates, now=None):
+    """Always show sector rotation, even when no sector has reached buy status."""
+    now = now or datetime.now().strftime("%Y/%m/%d %H:%M")
+    actionable = [
+        row for row in sector_rows or []
+        if row.get("判定") in {"循環初動", "循環買い"}
+    ]
+    displayed = (actionable or list(sector_rows or []))[:3]
+    lines = [f"🔁 **Stocknote 本日の循環セクター**  {now}"]
+    if not displayed:
+        lines.append("セクターデータを取得できませんでした。次回の定時処理で再確認します。")
+        return "\n".join(lines)
+    if not actionable:
+        lines.append("循環初動・循環買いは0業種です。資金流入点の上位を監視表示します。")
+    for rank, row in enumerate(displayed, 1):
+        lines.append(
+            f"{rank}. **{row['業種・テーマ']}**  {row.get('判定', '様子見')}"
+            f" / 1日 {float(row.get('1日%', 0)):+.2f}%"
+            f" / 5日 {float(row.get('5日%', 0)):+.2f}%"
+            f" / 初動 {float(row.get('初動点', 0)):.0f}点"
+        )
+    if candidates:
+        lines.append("**セクター内の買い検討・監視銘柄**")
+        for rank, row in enumerate(candidates[:5], 1):
+            lines.append(
+                f"{rank}. **{row['コード']} {row['銘柄名']}**"
+                f" / {row['業種・テーマ']} / {row.get('扱い', '監視')}"
+                f" / 1日 {float(row.get('1日%', 0)):+.2f}%"
+            )
+    else:
+        lines.append("セクター内の個別銘柄は5日線条件待ちです。")
+    lines.append("上昇後のセクターは追わず、初動と5日線付近を優先します。")
+    return "\n".join(lines)
+
+
+def build_short_discord_message(rows, total, now=None):
+    """Always report the top technical short watches and their execution status."""
+    now = now or datetime.now().strftime("%Y/%m/%d %H:%M")
+    lines = [f"📉 **Stocknote 信用売り候補・監視**  {now}"]
+    if not rows:
+        lines.append(f"母集団 {total}銘柄 / 本日は5日・25日線割れ等の監視条件に該当なし")
+        return "\n".join(lines)
+    lines.append(f"母集団 {total}銘柄 / 上位 {min(len(rows), SHORT_TOP_N)}銘柄")
+    for rank, row in enumerate(rows[:SHORT_TOP_N], 1):
+        lines.append(
+            f"{rank}. **{row['コード']} {row['銘柄名']}**"
+            f" / {row.get('空売り区分', '監視')} / 総合 {float(row.get('空売り総合評価', 0)):.1f}"
+            f" / RSI {float(row.get('RSI14', 0)):.1f}"
+            f" / 出来高 {float(row.get('出来高倍率', 1)):.1f}倍"
+            f" / {row.get('空売り監視理由', '下落条件を監視')}"
+        )
+    if any(row.get("貸借確認") is not True for row in rows[:SHORT_TOP_N]):
+        lines.append("SBIの売建可否を未確認の銘柄は監視のみです。貸株料・逆日歩・決算日も確認してください。")
+    lines.append("信用売りの自動発注は行いません。")
+    return "\n".join(lines)
+
+
+def update_rotation_ranking(market_score=50.0):
+    """Save sector history and return the rows used by the daily report."""
     sector_rows, sector_date = download_sector_rotation()
-    candidates = rank_rotation_stocks(sector_rows, market_score=50.0)
+    candidates = rank_rotation_stocks(sector_rows, market_score=market_score)
     asof = str(sector_date)[:10] if sector_date is not None else datetime.now().strftime("%Y-%m-%d")
     history = save_rotation_snapshot(candidates, asof)
-    patterns = analyze_rotation_patterns(candidates, history, market_score=50.0, asof=asof)
+    patterns = analyze_rotation_patterns(candidates, history, market_score=market_score, asof=asof)
     early = [row for row in patterns if row["初動加速"]]
     print(
         f"rotation reference: {len(candidates)} leaders / {len(early)} early accelerations; "
-        "excluded from buy notifications"
+        "included in the daily sector report"
     )
-    return patterns
+    return sector_rows, patterns
 
 
 def main():
@@ -234,11 +310,24 @@ def main():
         code=normalize_code(row.get(code_col,""))
         if code:
             items.append((code, str(row.get(name_col, code)) if name_col else code))
+    universe_by_code = {}
+    for _, row in df.iterrows():
+        code = normalize_code(row.get(code_col, ""))
+        if code:
+            universe_by_code[code] = row.to_dict()
     results=[]
+    short_technical = []
     for i,(code,name) in enumerate(items,1):
         try:
-            r=score_one(code,name)
+            hist = download_daily_history(code)
+            r=score_one(code,name,hist=hist)
             if r: results.append(r)
+            short_row = short_technical_snapshot(code, name, hist)
+            if short_row:
+                reason = short_watch_reason(short_row)
+                if reason:
+                    short_row["空売り監視理由"] = reason
+                    short_technical.append(short_row)
         except Exception as exc:
             print(f"WARN {code}: {exc}", file=sys.stderr)
         if i % 25 == 0: print(f"scanned {i}/{len(items)}")
@@ -259,17 +348,63 @@ def main():
             judged.append(enriched)
     judged.sort(key=lambda x:x["score"], reverse=True)
     candidates = [row for row in judged if row["score"] >= MIN_SCORE][:TOP_N]
+    try:
+        market_score = current_market_score()
+    except Exception as exc:
+        print(f"WARN market score: {exc}", file=sys.stderr)
+        market_score = 50.0
+    short_technical.sort(
+        key=lambda row: (
+            bool(row.get("空売りトレンド適合")),
+            float(row.get("空売りスコア") or 0.0),
+        ),
+        reverse=True,
+    )
+    short_rows = []
+    for row in short_technical[:SHORT_POOL]:
+        try:
+            fundamentals = get_fundamentals(row["コード"])
+        except Exception as exc:
+            print(f"WARN short fundamentals {row['コード']}: {exc}", file=sys.stderr)
+            fundamentals = {}
+        row.update(assess_short(
+            row,
+            fundamentals,
+            universe_by_code.get(row["コード"], {}),
+            market_score,
+        ))
+        if row.get("空売りトレンド適合") and row["空売り状態"] in {"空売り条件到達", "空売り条件接近"}:
+            row["空売り区分"] = "実行候補"
+        elif row.get("空売りトレンド適合"):
+            row["空売り区分"] = "本命監視"
+        else:
+            row["空売り区分"] = "早期監視"
+        short_rows.append(row)
+    short_rows.sort(
+        key=lambda row: (
+            row.get("空売り区分") == "実行候補",
+            row.get("空売り区分") == "本命監視",
+            float(row.get("空売り総合評価") or 0.0),
+        ),
+        reverse=True,
+    )
+    try:
+        sector_rows, rotation_patterns = update_rotation_ranking(market_score)
+    except Exception as exc:
+        print(f"WARN rotation ranking: {exc}", file=sys.stderr)
+        sector_rows, rotation_patterns = [], []
     if SEND_MEETING:
         post_discord(candidates, len(items))
+        post_discord_text(build_rotation_discord_message(sector_rows, rotation_patterns))
+        post_discord_text(build_short_discord_message(short_rows, len(items)))
     # This is an upsert, never a replacement: a zero-result scan leaves the
     # active 14-day monitoring list untouched.
     events = merge_new_candidates(candidates)
     notify(filter_new_notifications(events))
-    try:
-        update_rotation_ranking()
-    except Exception as exc:
-        print(f"WARN rotation ranking: {exc}", file=sys.stderr)
-    print(f"new scan: {len(candidates)} candidates from {len(items)} stocks")
+    print(
+        f"new scan: {len(candidates)} buy candidates / {len(short_rows)} short watches "
+        f"/ {len(rotation_patterns)} sector leaders from {len(items)} stocks"
+    )
 
 
 if __name__ == "__main__":

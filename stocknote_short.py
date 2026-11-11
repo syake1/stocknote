@@ -2,6 +2,11 @@
 import math
 import re
 
+import numpy as np
+import pandas as pd
+
+from stocknote_technicals import daily_trend_context, rsi14
+
 
 def number(value):
     if value is None:
@@ -118,6 +123,101 @@ def short_watch_reason(technical):
         or (rsi is not None and rsi >= 60 and price < ma5)
     )
     return "・".join(dict.fromkeys(reasons)) if early_trigger and reasons else None
+
+
+def short_technical_snapshot(code, name, hist):
+    """Build the shared daily technical snapshot used for short watchlists."""
+    if hist is None or hist.empty:
+        return None
+    frame = hist.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    if not {"Open", "High", "Low", "Close"}.issubset(frame.columns):
+        return None
+    frame = frame.dropna(subset=["High", "Low", "Close"])
+    close = pd.to_numeric(frame["Close"], errors="coerce").dropna()
+    if len(close) < 205:
+        return None
+    frame = frame.loc[close.index]
+    open_ = pd.to_numeric(frame["Open"], errors="coerce")
+    high = pd.to_numeric(frame["High"], errors="coerce")
+    ma5 = close.rolling(5).mean()
+    ma25 = close.rolling(25).mean()
+    ma75 = close.rolling(75).mean()
+    ma200 = close.rolling(200).mean()
+    std25 = close.rolling(25).std()
+    upper = ma25 + 2 * std25
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
+    trend = daily_trend_context(frame)
+    values = (
+        close.iloc[-1], ma5.iloc[-1], ma25.iloc[-1], ma75.iloc[-1],
+        ma200.iloc[-1], upper.iloc[-1], macd.iloc[-1], signal.iloc[-1],
+    )
+    if any(pd.isna(value) for value in values):
+        return None
+
+    px = float(close.iloc[-1])
+    m5, m25, m75, m200 = (float(series.iloc[-1]) for series in (ma5, ma25, ma75, ma200))
+    bup = float(upper.iloc[-1])
+    rv = float(rsi14(close).iloc[-1])
+    md, sg = float(macd.iloc[-1]), float(signal.iloc[-1])
+    volume_ratio = 1.0
+    if "Volume" in frame:
+        volume = pd.to_numeric(frame["Volume"], errors="coerce")
+        base = volume.iloc[-21:-1].mean() if len(volume) >= 21 else np.nan
+        if pd.notna(volume.iloc[-1]) and pd.notna(base) and float(base) > 0:
+            volume_ratio = float(volume.iloc[-1] / base)
+
+    bearish_engulfing = bool(
+        close.iloc[-2] > open_.iloc[-2]
+        and close.iloc[-1] < open_.iloc[-1]
+        and open_.iloc[-1] >= close.iloc[-2]
+        and close.iloc[-1] <= open_.iloc[-2]
+    )
+    body = abs(px - float(open_.iloc[-1]))
+    upper_wick = float(high.iloc[-1]) - max(px, float(open_.iloc[-1]))
+    upper_wick_bear = bool(
+        px < float(open_.iloc[-1])
+        and upper_wick >= max(body, px * 0.005)
+    )
+
+    short_rsi = float(np.clip((rv - 55) / 25 * 35, 0, 35))
+    short_bb = (
+        25.0 if px >= bup * 0.98
+        else float(np.clip((px - m25) / max(bup - m25, 1e-9) * 20, 0, 20))
+    )
+    short_trend = (12.0 if m25 <= m75 else 4.0) + (5.0 if px < m200 else 0.0)
+    short_macd = 8.0 if md < sg else 2.0
+    short_volume = float(np.clip((volume_ratio - 0.8) * 6, 0, 8))
+    short_candle = 12.0 if bearish_engulfing else 8.0 if upper_wick_bear else 0.0
+    score = float(np.clip(
+        short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle,
+        0,
+        100,
+    ))
+    trend_ok = bool(trend and trend.get("short_eligible"))
+    if not trend_ok:
+        score = min(score, 44.0)
+    elif trend.get("tenkan_cross_down"):
+        score = min(100.0, score + 8.0)
+    return {
+        "コード": str(code),
+        "銘柄名": name or str(code),
+        "現在値": px,
+        "RSI14": rv,
+        "MA5": m5,
+        "MA25": m25,
+        "MA75": m75,
+        "MA200": m200,
+        "出来高倍率": volume_ratio,
+        "包み陰線": bearish_engulfing,
+        "上ヒゲ陰線": upper_wick_bear,
+        "転換線下抜け": bool(trend and trend.get("tenkan_cross_down")),
+        "一目位置": trend.get("cloud_position", "データ不足") if trend else "データ不足",
+        "空売りスコア": score,
+        "空売りトレンド適合": trend_ok,
+    }
 
 
 def assess_short(technical, fundamental, universe_row, market_score):

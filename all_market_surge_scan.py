@@ -90,7 +90,7 @@ def build_discord_message(candidates, summary, threshold, scanned, failed):
         lines.append("本日の検証済み朝成候補はありません。")
         watch = candidates[candidates["判定"].eq("監視")].head(5) if not candidates.empty else pd.DataFrame()
         if not watch.empty:
-            lines.append("📋 **急騰初動・監視上位（買いサインではありません）**")
+            lines.append("📋 **翌朝の買い検討・監視上位（最終買いサイン前）**")
             for rank, row in enumerate(watch.to_dict("records"), 1):
                 lines.append(
                     f"{rank}. **{row['コード']} {row['銘柄名']}**  {row['急騰初動点']:.1f}点"
