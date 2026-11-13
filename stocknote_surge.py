@@ -31,6 +31,8 @@ ALLOWED_MARKETS = (
     "スタンダード（内国株式）",
     "グロース（内国株式）",
 )
+MAX_INITIAL_DAY_RETURN = 4.0
+MAX_INITIAL_MA5_DISTANCE = 3.0
 
 
 def normalize_code(value) -> str:
@@ -153,6 +155,7 @@ def surge_snapshot(code, name, market, sector, history, now=None):
     acceleration = five_return - prior_five_return
     previous_high20 = float(high.iloc[-21:-1].max())
     high_distance = float((price / previous_high20 - 1.0) * 100.0)
+    ma5_distance = float((price / ma5.iloc[-1] - 1.0) * 100.0)
     ma5_cross = bool(price > ma5.iloc[-1] and close.iloc[-2] <= ma5.iloc[-2])
     above_ma5 = bool(price > ma5.iloc[-1])
     ma20_rising = bool(ma20.iloc[-1] > ma20.iloc[-6])
@@ -163,7 +166,12 @@ def surge_snapshot(code, name, market, sector, history, now=None):
 
     liquid = average_turnover >= 50_000_000 and turnover >= 80_000_000
     price_ok = 100.0 <= price <= 50_000.0
-    move_ok = -1.5 <= day_return <= 7.0 and five_return <= 15.0 and twenty_return <= 30.0
+    move_ok = (
+        -1.5 <= day_return < MAX_INITIAL_DAY_RETURN
+        and ma5_distance < MAX_INITIAL_MA5_DISTANCE
+        and five_return <= 15.0
+        and twenty_return <= 30.0
+    )
     momentum_ok = bool(
         above_ma5
         and volume_ratio >= 1.5
@@ -171,7 +179,13 @@ def surge_snapshot(code, name, market, sector, history, now=None):
         and close_position >= 0.55
         and (ma5_cross or high_distance >= -2.0 or acceleration >= 3.0)
     )
-    overheated = bool(day_return > 7.0 or five_return > 15.0 or twenty_return > 30.0 or rsi > 78.0)
+    overheated = bool(
+        day_return >= MAX_INITIAL_DAY_RETURN
+        or ma5_distance >= MAX_INITIAL_MA5_DISTANCE
+        or five_return > 15.0
+        or twenty_return > 30.0
+        or rsi > 78.0
+    )
 
     volume_points = float(np.clip((volume_ratio - 1.0) / 2.0 * 25.0, 0.0, 25.0))
     turnover_oku = turnover / 100_000_000.0
@@ -216,6 +230,7 @@ def surge_snapshot(code, name, market, sector, history, now=None):
         "売買代金億円": turnover_oku,
         "平均売買代金億円": average_turnover / 100_000_000.0,
         "20日高値距離%": high_distance,
+        "5日線乖離%": ma5_distance,
         "RSI14": rsi,
         "5日線上抜け": ma5_cross,
         "週足": weekly,
@@ -258,6 +273,7 @@ def historical_market_order_events(code, history, now=None):
     twenty_return = close.pct_change(20) * 100.0
     previous_high20 = high.shift(1).rolling(20).max()
     high_distance = (close / previous_high20 - 1.0) * 100.0
+    ma5_distance = (close / ma5 - 1.0) * 100.0
     ma5_cross = (close > ma5) & (close.shift(1) <= ma5.shift(1))
     above_ma5 = close > ma5
     rsi = _rsi14(close)
@@ -266,7 +282,13 @@ def historical_market_order_events(code, history, now=None):
 
     liquid = (average_turnover >= 50_000_000) & (turnover >= 80_000_000)
     price_ok = close.between(100.0, 50_000.0)
-    move_ok = day_return.between(-1.5, 7.0) & (five_return <= 15.0) & (twenty_return <= 30.0)
+    move_ok = (
+        (day_return >= -1.5)
+        & (day_return < MAX_INITIAL_DAY_RETURN)
+        & (ma5_distance < MAX_INITIAL_MA5_DISTANCE)
+        & (five_return <= 15.0)
+        & (twenty_return <= 30.0)
+    )
     momentum_ok = (
         above_ma5
         & (volume_ratio >= 1.5)
@@ -274,7 +296,13 @@ def historical_market_order_events(code, history, now=None):
         & (close_position >= 0.55)
         & (ma5_cross | (high_distance >= -2.0) | (acceleration >= 3.0))
     )
-    overheated = (day_return > 7.0) | (five_return > 15.0) | (twenty_return > 30.0) | (rsi > 78.0)
+    overheated = (
+        (day_return >= MAX_INITIAL_DAY_RETURN)
+        | (ma5_distance >= MAX_INITIAL_MA5_DISTANCE)
+        | (five_return > 15.0)
+        | (twenty_return > 30.0)
+        | (rsi > 78.0)
+    )
 
     volume_points = ((volume_ratio - 1.0) / 2.0 * 25.0).clip(0.0, 25.0)
     turnover_oku = turnover / 100_000_000.0

@@ -90,14 +90,15 @@ def build_discord_message(candidates, summary, threshold, scanned, failed):
         lines.append("本日の検証済み朝成候補はありません。")
         watch = candidates[candidates["判定"].eq("監視")].head(5) if not candidates.empty else pd.DataFrame()
         if not watch.empty:
-            lines.append("📋 **翌朝の買い検討・監視上位（最終買いサイン前）**")
+            lines.append("📋 **急騰前の初動監視（買いサインではありません）**")
             for rank, row in enumerate(watch.to_dict("records"), 1):
                 lines.append(
                     f"{rank}. **{row['コード']} {row['銘柄名']}**  {row['急騰初動点']:.1f}点"
                     f" / {row['業種']} / 前日比 {row['前日比%']:+.2f}%"
+                    f" / 5日線乖離 {row['5日線乖離%']:+.2f}%"
                     f" / 出来高 {row['出来高倍率']:.1f}倍"
                 )
-            lines.append("寄付き直後の飛びつきは禁止。5日線維持を確認して監視します。")
+            lines.append("当日+4%以上・5日線乖離+3%以上は除外済み。翌朝は寄付き直後に飛びつかず、5日線維持を確認します。")
     else:
         lines.append("SBIの寄付き気配が前日終値比+3%以上なら成行見送りです。")
         for rank, row in enumerate(morning.to_dict("records"), 1):
