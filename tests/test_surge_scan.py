@@ -63,6 +63,43 @@ def test_surge_snapshot_identifies_liquid_initial_move():
     assert "出来高" in snapshot["理由"]
 
 
+def test_surge_snapshot_excludes_four_percent_daily_jump():
+    history = history_with_surge()
+    previous_close = float(history["Close"].iloc[-2])
+    history.iloc[-1, history.columns.get_loc("Close")] = previous_close * 1.0432
+    history.iloc[-1, history.columns.get_loc("High")] = previous_close * 1.05
+    history.iloc[-1, history.columns.get_loc("Low")] = previous_close * 0.995
+
+    snapshot = surge_snapshot(
+        "9042", "阪急阪神ＨＤ", "プライム（内国株式）", "陸運業",
+        history, now="2026-06-01 18:00+09:00",
+    )
+
+    assert snapshot["前日比%"] >= 4.0
+    assert snapshot["過熱"] is True
+    assert snapshot["初動条件"] is False
+    assert rank_surge_candidates([snapshot], verified_threshold=None).empty
+
+
+def test_surge_snapshot_excludes_three_percent_ma5_extension():
+    history = history_with_surge()
+    close_column = history.columns.get_loc("Close")
+    history.iloc[-5:, close_column] = [930.0, 940.0, 950.0, 988.0, 1017.0]
+    history["Open"] = history["Close"].shift(1).fillna(history["Close"].iloc[0])
+    history["High"] = np.maximum(history["Open"], history["Close"]) + 8.0
+    history["Low"] = np.minimum(history["Open"], history["Close"]) - 5.0
+
+    snapshot = surge_snapshot(
+        "130A", "成長社", "グロース（内国株式）", "情報・通信業",
+        history, now="2026-06-01 18:00+09:00",
+    )
+
+    assert snapshot["前日比%"] < 4.0
+    assert snapshot["5日線乖離%"] >= 3.0
+    assert snapshot["過熱"] is True
+    assert snapshot["初動条件"] is False
+
+
 def test_rank_requires_verified_backtest_for_morning_label():
     snapshot = surge_snapshot(
         "130A", "成長社", "グロース（内国株式）", "情報・通信業",
@@ -122,7 +159,8 @@ def test_discord_message_shows_watchlist_when_backtest_is_unverified():
             "業種": "化学",
             "判定": "監視",
             "急騰初動点": 93.7,
-            "前日比%": 5.31,
+            "前日比%": 2.31,
+            "5日線乖離%": 1.84,
             "出来高倍率": 3.8,
         },
         {
@@ -131,7 +169,8 @@ def test_discord_message_shows_watchlist_when_backtest_is_unverified():
             "業種": "空運業",
             "判定": "監視",
             "急騰初動点": 81.2,
-            "前日比%": 4.85,
+            "前日比%": 1.85,
+            "5日線乖離%": 1.12,
             "出来高倍率": 2.4,
         },
     ])
@@ -148,7 +187,8 @@ def test_discord_message_shows_watchlist_when_backtest_is_unverified():
     assert "東証全市場・急騰初動" in message
     assert "成行買いサインは出さず" in message
     assert "現在の最良: 75点 / 609件" in message
-    assert "翌朝の買い検討・監視上位" in message
+    assert "急騰前の初動監視" in message
     assert "4091 日本酸素ＨＤ" in message
     assert "9201 日本航空" in message
-    assert "最終買いサイン前" in message
+    assert "買いサインではありません" in message
+    assert "当日+4%以上・5日線乖離+3%以上は除外済み" in message
