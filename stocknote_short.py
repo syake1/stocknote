@@ -1,11 +1,15 @@
 """Conservative short-selling assessment using only available real data."""
 import math
+import os
 import re
 
 import numpy as np
 import pandas as pd
 
 from stocknote_technicals import daily_trend_context, rsi14
+
+
+MIN_SHORT_MA75_DISTANCE_PCT = float(os.getenv("STOCKNOTE_SHORT_MIN_MA75_DISTANCE", "5.0"))
 
 
 def number(value):
@@ -86,19 +90,48 @@ def credit_score(ratio):
     return 65.0
 
 
-def short_watch_reason(technical):
-    """Return an early-watch reason before the full long-term downtrend is complete."""
+def short_ma75_distance(technical):
+    """Return the current percentage distance above the daily MA75."""
+    explicit = number(technical.get("75日線乖離%"))
+    if explicit is not None:
+        return explicit
+    price = number(technical.get("現在値"))
+    ma75 = number(technical.get("MA75"))
+    if price is None or ma75 is None or ma75 <= 0:
+        return None
+    return (price / ma75 - 1.0) * 100.0
+
+
+def short_reversal_confirmed(technical):
+    """Return True after an overextended stock begins to lose upward momentum."""
+    if "空売り反落確認" in technical:
+        return bool(technical.get("空売り反落確認"))
+    price = number(technical.get("現在値"))
+    ma5 = number(technical.get("MA5"))
+    macd = number(technical.get("MACD"))
+    signal = number(technical.get("MACDシグナル"))
+    return bool(
+        technical.get("転換線下抜け")
+        or technical.get("包み陰線")
+        or technical.get("上ヒゲ陰線")
+        or (price is not None and ma5 is not None and price < ma5)
+        or (macd is not None and signal is not None and macd < signal)
+    )
+
+
+def short_watch_reason(technical, min_ma75_distance_pct=MIN_SHORT_MA75_DISTANCE_PCT):
+    """Return a watch reason only after price is sufficiently above the MA75."""
     price = number(technical.get("現在値"))
     ma5 = number(technical.get("MA5"))
     ma25 = number(technical.get("MA25"))
-    ma75 = number(technical.get("MA75"))
     rsi = number(technical.get("RSI14"))
     score = number(technical.get("空売りスコア")) or 0.0
-    if price is None or ma5 is None or ma25 is None:
+    distance = short_ma75_distance(technical)
+    if price is None or ma5 is None or ma25 is None or distance is None:
         return None
-    reasons = []
-    if technical.get("空売りトレンド適合"):
-        reasons.append("長期下降トレンド")
+    if distance < float(min_ma75_distance_pct):
+        return None
+    reasons = [f"75日線から+{distance:.1f}%上方乖離"]
     if price < ma5 and price < ma25:
         reasons.append("5日・25日線の下")
     elif price < ma5:
@@ -107,25 +140,21 @@ def short_watch_reason(technical):
         reasons.append("転換線下抜け")
     if technical.get("包み陰線") or technical.get("上ヒゲ陰線"):
         reasons.append("弱いローソク足")
-    if ma75 is not None and price < ma75:
-        reasons.append("75日線の下")
     if rsi is not None and rsi >= 60 and price < ma5:
         reasons.append("高RSIから失速")
     if score >= 45:
         reasons.append("空売り点45以上")
-
-    early_trigger = bool(
-        technical.get("空売りトレンド適合")
-        or technical.get("転換線下抜け")
-        or technical.get("包み陰線")
-        or technical.get("上ヒゲ陰線")
-        or (price < ma5 and price < ma25)
-        or (rsi is not None and rsi >= 60 and price < ma5)
-    )
-    return "・".join(dict.fromkeys(reasons)) if early_trigger and reasons else None
+    if not short_reversal_confirmed(technical):
+        reasons.append("反落待ち")
+    return "・".join(dict.fromkeys(reasons))
 
 
-def short_technical_snapshot(code, name, hist):
+def short_technical_snapshot(
+    code,
+    name,
+    hist,
+    min_ma75_distance_pct=MIN_SHORT_MA75_DISTANCE_PCT,
+):
     """Build the shared daily technical snapshot used for short watchlists."""
     if hist is None or hist.empty:
         return None
@@ -162,6 +191,8 @@ def short_technical_snapshot(code, name, hist):
     bup = float(upper.iloc[-1])
     rv = float(rsi14(close).iloc[-1])
     md, sg = float(macd.iloc[-1]), float(signal.iloc[-1])
+    ma75_distance_pct = float((px / m75 - 1.0) * 100.0)
+    ma75_overextended = bool(ma75_distance_pct >= float(min_ma75_distance_pct))
     volume_ratio = 1.0
     if "Volume" in frame:
         volume = pd.to_numeric(frame["Volume"], errors="coerce")
@@ -187,20 +218,29 @@ def short_technical_snapshot(code, name, hist):
         25.0 if px >= bup * 0.98
         else float(np.clip((px - m25) / max(bup - m25, 1e-9) * 20, 0, 20))
     )
-    short_trend = (12.0 if m25 <= m75 else 4.0) + (5.0 if px < m200 else 0.0)
+    short_ma75 = (
+        float(np.clip(12.0 + (ma75_distance_pct - float(min_ma75_distance_pct)) * 1.3, 12.0, 25.0))
+        if ma75_overextended else 0.0
+    )
     short_macd = 8.0 if md < sg else 2.0
     short_volume = float(np.clip((volume_ratio - 0.8) * 6, 0, 8))
     short_candle = 12.0 if bearish_engulfing else 8.0 if upper_wick_bear else 0.0
     score = float(np.clip(
-        short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle,
+        short_rsi + short_bb + short_ma75 + short_macd + short_volume + short_candle,
         0,
         100,
     ))
-    trend_ok = bool(trend and trend.get("short_eligible"))
-    if not trend_ok:
+    reversal_confirmed = bool(
+        px < m5
+        or md < sg
+        or bearish_engulfing
+        or upper_wick_bear
+        or (trend and trend.get("tenkan_cross_down"))
+    )
+    if not ma75_overextended:
         score = min(score, 44.0)
-    elif trend.get("tenkan_cross_down"):
-        score = min(100.0, score + 8.0)
+    elif not reversal_confirmed:
+        score = min(score, 64.0)
     return {
         "コード": str(code),
         "銘柄名": name or str(code),
@@ -210,17 +250,28 @@ def short_technical_snapshot(code, name, hist):
         "MA25": m25,
         "MA75": m75,
         "MA200": m200,
+        "75日線乖離%": ma75_distance_pct,
+        "75日線上方乖離条件": ma75_overextended,
         "出来高倍率": volume_ratio,
         "包み陰線": bearish_engulfing,
         "上ヒゲ陰線": upper_wick_bear,
         "転換線下抜け": bool(trend and trend.get("tenkan_cross_down")),
         "一目位置": trend.get("cloud_position", "データ不足") if trend else "データ不足",
+        "MACD": md,
+        "MACDシグナル": sg,
         "空売りスコア": score,
-        "空売りトレンド適合": trend_ok,
+        "空売り反落確認": reversal_confirmed,
+        "空売りトレンド適合": ma75_overextended,
     }
 
 
-def assess_short(technical, fundamental, universe_row, market_score):
+def assess_short(
+    technical,
+    fundamental,
+    universe_row,
+    market_score,
+    min_ma75_distance_pct=MIN_SHORT_MA75_DISTANCE_PCT,
+):
     per_csv = first_value(universe_row, ["PER(株価収益率)(予)(倍)", "予想PER", "PER", "PER(倍)"])
     ratio_raw = first_value(universe_row, ["信用倍率", "信用倍率(倍)", "信用取引倍率", "貸借倍率"])
     ratio = number(ratio_raw)
@@ -232,10 +283,17 @@ def assess_short(technical, fundamental, universe_row, market_score):
     # Unknown credit data is not treated as neutral: it contributes zero and
     # prevents an actionable label until the broker data is confirmed.
     total = tscore * .45 + fscore * .25 + (cscore or 0.0) * .15 + bearish_market * .15
-    trend_ok = bool(technical.get("空売りトレンド適合"))
+    ma75_distance_pct = short_ma75_distance(technical)
+    ma75_overextended = bool(
+        ma75_distance_pct is not None
+        and ma75_distance_pct >= float(min_ma75_distance_pct)
+    )
+    reversal_confirmed = short_reversal_confirmed(technical)
     confirmed = ratio is not None and loanable is True
-    if not trend_ok:
-        status = "トレンド条件外"
+    if not ma75_overextended:
+        status = "75日線上方乖離不足"
+    elif not reversal_confirmed:
+        status = "反落確認待ち"
     elif not confirmed:
         status = "SBI信用データ確認待ち"
     elif ratio < 1:

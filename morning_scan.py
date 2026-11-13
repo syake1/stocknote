@@ -16,7 +16,12 @@ import yfinance as yf
 from monitor_candidates import notify
 from stocknote_fundamentals import get_fundamentals
 from stocknote_holding_analysis import market_score as current_market_score
-from stocknote_short import assess_short, short_technical_snapshot, short_watch_reason
+from stocknote_short import (
+    MIN_SHORT_MA75_DISTANCE_PCT,
+    assess_short,
+    short_technical_snapshot,
+    short_watch_reason,
+)
 from stocknote_tracking import filter_new_notifications, merge_new_candidates
 from stocknote_technicals import baseline_pullback_zone, daily_trend_context
 from stocknote_sector_rotation import download_sector_rotation, rank_rotation_stocks
@@ -263,11 +268,14 @@ def build_rotation_discord_message(sector_rows, candidates, now=None):
 
 
 def build_short_discord_message(rows, total, now=None):
-    """Always report the top technical short watches and their execution status."""
+    """Report MA75-overextended short watches and their execution status."""
     now = now or datetime.now().strftime("%Y/%m/%d %H:%M")
-    lines = [f"📉 **Stocknote 信用売り候補・監視**  {now}"]
+    lines = [f"📉 **Stocknote 75日線上方乖離・信用売り監視**  {now}"]
     if not rows:
-        lines.append(f"母集団 {total}銘柄 / 本日は5日・25日線割れ等の監視条件に該当なし")
+        lines.append(
+            f"母集団 {total}銘柄 / 本日は75日線より"
+            f"+{MIN_SHORT_MA75_DISTANCE_PCT:.1f}%以上乖離した監視銘柄なし"
+        )
         return "\n".join(lines)
     lines.append(f"母集団 {total}銘柄 / 上位 {min(len(rows), SHORT_TOP_N)}銘柄")
     for rank, row in enumerate(rows[:SHORT_TOP_N], 1):
@@ -275,12 +283,14 @@ def build_short_discord_message(rows, total, now=None):
             f"{rank}. **{row['コード']} {row['銘柄名']}**"
             f" / {row.get('空売り区分', '監視')} / 総合 {float(row.get('空売り総合評価', 0)):.1f}"
             f" / RSI {float(row.get('RSI14', 0)):.1f}"
+            f" / 75日線乖離 {float(row.get('75日線乖離%', 0)):+.1f}%"
+            f" / 反落確認 {'済' if row.get('空売り反落確認') else '待ち'}"
             f" / 出来高 {float(row.get('出来高倍率', 1)):.1f}倍"
             f" / {row.get('空売り監視理由', '下落条件を監視')}"
         )
     if any(row.get("貸借確認") is not True for row in rows[:SHORT_TOP_N]):
         lines.append("SBIの売建可否を未確認の銘柄は監視のみです。貸株料・逆日歩・決算日も確認してください。")
-    lines.append("信用売りの自動発注は行いません。")
+    lines.append("75日線上方乖離が必須です。反落確認前は監視のみで、信用売りの自動発注は行いません。")
     return "\n".join(lines)
 
 
@@ -355,6 +365,7 @@ def main():
         market_score = 50.0
     short_technical.sort(
         key=lambda row: (
+            bool(row.get("空売り反落確認")),
             bool(row.get("空売りトレンド適合")),
             float(row.get("空売りスコア") or 0.0),
         ),
@@ -373,9 +384,11 @@ def main():
             universe_by_code.get(row["コード"], {}),
             market_score,
         ))
-        if row.get("空売りトレンド適合") and row["空売り状態"] in {"空売り条件到達", "空売り条件接近"}:
+        if row["空売り状態"] in {"空売り条件到達", "空売り条件接近"}:
             row["空売り区分"] = "実行候補"
-        elif row.get("空売りトレンド適合"):
+        elif row["空売り状態"] == "反落確認待ち":
+            row["空売り区分"] = "乖離監視"
+        elif row.get("75日線上方乖離条件"):
             row["空売り区分"] = "本命監視"
         else:
             row["空売り区分"] = "早期監視"
@@ -384,6 +397,7 @@ def main():
         key=lambda row: (
             row.get("空売り区分") == "実行候補",
             row.get("空売り区分") == "本命監視",
+            row.get("空売り区分") == "乖離監視",
             float(row.get("空売り総合評価") or 0.0),
         ),
         reverse=True,
