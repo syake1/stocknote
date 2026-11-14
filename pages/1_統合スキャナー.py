@@ -35,7 +35,13 @@ from stocknote_technicals import (
     daily_trend_context,
     quarterly_strength_context,
 )
-from stocknote_short import assess_short, number, short_watch_reason
+from stocknote_short import (
+    MIN_SHORT_MA75_DISTANCE_PCT,
+    assess_short,
+    number,
+    short_reversal_confirmed,
+    short_watch_reason,
+)
 from stocknote_surge import (
     load_surge_backtest,
     load_surge_candidates,
@@ -74,6 +80,16 @@ with st.sidebar:
     if decline_add_count <= decline_signal_count:
         st.warning("追加買いの本数は買いシグナルより大きくしてください。")
     st.caption("日足の確定後だけ更新します。証券会社への注文は送りません。")
+    st.markdown("### 信用売り設定")
+    short_ma75_min_pct = st.slider(
+        "75日線上方乖離の最低値（%）",
+        1.0,
+        20.0,
+        float(MIN_SHORT_MA75_DISTANCE_PCT),
+        0.5,
+        help="現在値が日足75日線より何%以上高い銘柄を信用売り監視に入れるかを指定します。",
+    )
+    st.caption("最低乖離率未満は除外し、条件到達後も反落確認までは売りサインにしません。")
 
 decline_price_column = PRICE_LABELS[decline_price_label]
 
@@ -255,6 +271,7 @@ def technical_scores(
     decline_compare_bars=2,
     decline_price_column="Close",
     decline_start_mode=START_MODE_RESET,
+    short_ma75_min_pct=MIN_SHORT_MA75_DISTANCE_PCT,
 ):
     if hist is None or hist.empty or "Close" not in hist.columns:
         return {"コード": code, "銘柄名": name or code, "error": "株価データなし"}
@@ -417,16 +434,26 @@ def technical_scores(
 
     short_rsi = float(np.clip((rv - 55) / 25 * 35, 0, 35))
     short_bb = 25.0 if px >= bup * 0.98 else float(np.clip((px - m25) / max(bup - m25, 1e-9) * 20, 0, 20))
-    short_trend = (12.0 if m25 <= m75 else 4.0) + (5.0 if np.isfinite(m200) and px < m200 else 0.0)
+    short_ma75_overextended = bool(ma75_distance_pct >= float(short_ma75_min_pct))
+    short_ma75 = (
+        float(np.clip(12.0 + (ma75_distance_pct - float(short_ma75_min_pct)) * 1.3, 12.0, 25.0))
+        if short_ma75_overextended else 0.0
+    )
     short_macd = 8.0 if md < sg else 2.0
     short_volume = float(np.clip((vr - 0.8) * 6, 0, 8))
     short_candle = 12.0 if bearish_engulfing else 8.0 if upper_wick_bear else 0.0
-    short_score = float(np.clip(short_rsi + short_bb + short_trend + short_macd + short_volume + short_candle, 0, 100))
-    short_trend_ok = bool(trend and trend.get("short_eligible"))
-    if not short_trend_ok:
+    short_reversal_confirmed = bool(
+        px < m5
+        or md < sg
+        or bearish_engulfing
+        or upper_wick_bear
+        or (trend and trend.get("tenkan_cross_down"))
+    )
+    short_score = float(np.clip(short_rsi + short_bb + short_ma75 + short_macd + short_volume + short_candle, 0, 100))
+    if not short_ma75_overextended:
         short_score = min(short_score, 44.0)
-    elif trend.get("tenkan_cross_down"):
-        short_score = min(100.0, short_score + 8.0)
+    elif not short_reversal_confirmed:
+        short_score = min(short_score, 64.0)
 
     return {
         "コード": code, "銘柄名": name or code, "現在値": px, "RSI14": rv,
@@ -470,6 +497,7 @@ def technical_scores(
         "BB下限到達日": bb_lower_touch_date,
         "BB下限乖離%": bb_lower_distance_pct,
         "75日線乖離%": ma75_distance_pct, "BB位置σ": bb_position,
+        "75日線上方乖離条件": short_ma75_overextended,
         "四半期足強度": quarterly["quarterly_score"] if quarterly else 0.0,
         "四半期足適合": quarterly_ok,
         "四半期足判定": quarterly["quarterly_reason"] if quarterly else "四半期足の履歴不足",
@@ -487,11 +515,12 @@ def technical_scores(
         "基準線": trend["kijun"] if trend else np.nan,
         "転換線上抜け": bool(trend and trend["tenkan_cross_up"]),
         "転換線下抜け": bool(trend and trend.get("tenkan_cross_down")),
-        "空売りトレンド適合": short_trend_ok,
+        "空売り反落確認": short_reversal_confirmed,
+        "空売りトレンド適合": short_ma75_overextended,
         "トレンド判定": trend["trend_reason"] if trend else "日足履歴不足",
         "買い内訳": {"RSI": buy_rsi, "BB": buy_bb, "トレンド": buy_trend,
                      "MACD": buy_macd, "出来高": buy_volume, "ローソク足": buy_candle},
-        "空売り内訳": {"RSI": short_rsi, "BB": short_bb, "トレンド": short_trend,
+        "空売り内訳": {"RSI": short_rsi, "BB": short_bb, "75日線上方乖離": short_ma75,
                        "MACD": short_macd, "出来高": short_volume, "ローソク足": short_candle},
         "error": None,
     }
@@ -505,6 +534,7 @@ def scan_items(
     decline_compare_bars=2,
     decline_price_column="Close",
     decline_start_mode=START_MODE_RESET,
+    short_ma75_min_pct=MIN_SHORT_MA75_DISTANCE_PCT,
 ):
     items = [(normalize_code(c), str(n or "")) for c, n in items]
     items = [(c, n) for c, n in items if c]
@@ -531,6 +561,7 @@ def scan_items(
                     decline_compare_bars,
                     decline_price_column,
                     decline_start_mode,
+                    short_ma75_min_pct,
                 ))
             except Exception as exc:
                 results.append({"コード": code, "銘柄名": name or code, "error": f"分析エラー: {exc}"})
@@ -831,7 +862,6 @@ def render_clickable_stock_table(
         "key": key,
         "on_select": "rerun",
         "selection_mode": "single-row",
-        "alt": "銘柄を選択すると日足チャートが開く一覧表",
     }
     if height is not None:
         dataframe_args["height"] = height
@@ -1029,6 +1059,7 @@ if u is not None and not u.empty:
                 decline_compare_bars,
                 decline_price_column,
                 decline_start_mode,
+                short_ma75_min_pct,
             )
             performed_scan = True
 
@@ -1047,6 +1078,12 @@ if st.session_state.scan_results is not None:
             # defaults so a hot Streamlit redeploy never crashes mid-scan.
             r.setdefault("四半期足形状", "上昇トレンド" if r.get("四半期足適合") else "対象外")
             r.setdefault("高値圏持ち合い", False)
+            ma75_distance = number(r.get("75日線乖離%"))
+            r["75日線上方乖離条件"] = bool(
+                ma75_distance is not None and ma75_distance >= short_ma75_min_pct
+            )
+            r.setdefault("空売り反落確認", short_reversal_confirmed(r))
+            r["空売りトレンド適合"] = r["75日線上方乖離条件"]
             source = universe_by_code.get(str(r["コード"]), {})
             forecast_per = number(source.get("PER(株価収益率)(予)(倍)"))
             r["予想PER"] = forecast_per
@@ -1129,13 +1166,14 @@ if st.session_state.scan_results is not None:
         buy = monitored
         short_watch_pre = []
         for row in ok:
-            watch_reason = short_watch_reason(row)
+            watch_reason = short_watch_reason(row, short_ma75_min_pct)
             if watch_reason:
                 row["空売り監視理由"] = watch_reason
                 short_watch_pre.append(row)
         short_pre = sorted(
             short_watch_pre,
             key=lambda row: (
+                bool(row.get("空売り反落確認")),
                 bool(row.get("空売りトレンド適合")),
                 float(row.get("空売りスコア") or 0.0),
             ),
@@ -1196,20 +1234,27 @@ if st.session_state.scan_results is not None:
         with st.spinner("信用売り候補のファンダメンタルを確認中…"):
             for r in short_pre:
                 f = fundamental_employee(r["コード"])
-                r.update(assess_short(r, f, universe_by_code.get(str(r["コード"]), {}), market_score))
-                if r.get("空売りトレンド適合") and r["空売り状態"] in {"空売り条件到達", "空売り条件接近"}:
+                r.update(assess_short(
+                    r,
+                    f,
+                    universe_by_code.get(str(r["コード"]), {}),
+                    market_score,
+                    short_ma75_min_pct,
+                ))
+                if r["空売り状態"] in {"空売り条件到達", "空売り条件接近"}:
                     r["空売り区分"] = "実行候補"
-                elif r.get("空売りトレンド適合"):
+                elif r["空売り状態"] == "反落確認待ち":
+                    r["空売り区分"] = "乖離監視"
+                elif r.get("75日線上方乖離条件"):
                     r["空売り区分"] = "本命監視"
                 else:
                     r["空売り区分"] = "早期監視"
-                    if r["空売り状態"] == "トレンド条件外":
-                        r["空売り状態"] = "早期監視（長期下降待ち）"
                 short.append(r)
         short.sort(
             key=lambda row: (
                 row.get("空売り区分") == "実行候補",
                 row.get("空売り区分") == "本命監視",
+                row.get("空売り区分") == "乖離監視",
                 float(row.get("空売り総合評価") or 0.0),
             ),
             reverse=True,
@@ -1565,28 +1610,30 @@ if st.session_state.scan_results is not None:
                 st.info("本日は、表示できる循環セクター参考銘柄はありません。")
 
         with tab_short:
-            st.subheader("空売り候補・早期監視ランキング")
+            st.subheader("75日線上方乖離・信用売りランキング")
             st.caption(
-                "5日・25日線割れや転換線下抜けを早期監視に出し、長期下降トレンドと"
+                f"日足75日線より+{short_ma75_min_pct:.1f}%以上乖離した銘柄だけを表示します。"
+                "乖離後の5日線割れ・転換線下抜け・陰線形状などで反落を確認し、"
                 "SBI信用データまで確認できた銘柄だけを実行候補にします。"
             )
             if short:
                 execution_count = sum(row.get("空売り区分") == "実行候補" for row in short)
                 core_watch_count = sum(row.get("空売り区分") == "本命監視" for row in short)
-                early_watch_count = sum(row.get("空売り区分") == "早期監視" for row in short)
+                distance_watch_count = sum(row.get("空売り区分") == "乖離監視" for row in short)
                 st.info(
                     f"実行候補 {execution_count}銘柄 / 本命監視 {core_watch_count}銘柄 / "
-                    f"早期監視 {early_watch_count}銘柄"
+                    f"反落待ち {distance_watch_count}銘柄"
                 )
                 cols = ["コード", "銘柄名", "空売り区分", "空売り総合評価", "空売り状態", "予想PER", "信用倍率",
                         "貸借確認", "空売りスコア", "空売りファンダ", "RSI14", "一目位置",
-                        "転換線下抜け", "包み陰線", "出来高倍率", "空売り監視理由", "空売り理由"]
+                        "75日線乖離%", "空売り反落確認", "転換線下抜け", "包み陰線",
+                        "出来高倍率", "空売り監視理由", "空売り理由"]
                 render_clickable_stock_table(
                     pd.DataFrame(short)[cols].head(30),
                     key="short_candidate_stocks",
                 )
             else:
-                st.info("現在、空売りの早期監視条件を満たす銘柄はありません。")
+                st.info(f"現在、75日線より+{short_ma75_min_pct:.1f}%以上乖離した信用売り監視銘柄はありません。")
             st.warning("発注前にSBIで売建可能数・貸株料・逆日歩・決算日を必ず確認してください。Stocknoteは自動発注しません。")
 
         with tab_meeting:
