@@ -83,11 +83,14 @@ def test_short_message_shows_watchlist_without_credit_confirmation():
     rows = [{
         "コード": "1234", "銘柄名": "テスト", "空売り区分": "本命監視",
         "空売り総合評価": 67.5, "RSI14": 62, "出来高倍率": 1.8,
-        "空売り監視理由": "5日線割れ", "貸借確認": None,
+        "75日線乖離%": 8.4, "空売り反落確認": True,
+        "空売り監視理由": "75日線から+8.4%上方乖離・5日線割れ", "貸借確認": None,
     }]
     message = morning_scan.build_short_discord_message(
         rows, 786, now="2026/11/12 05:00"
     )
-    assert "信用売り候補・監視" in message
+    assert "75日線上方乖離・信用売り監視" in message
     assert "1234 テスト" in message
+    assert "75日線乖離 +8.4%" in message
+    assert "反落確認 済" in message
     assert "SBIの売建可否を未確認" in message
