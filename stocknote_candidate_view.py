@@ -56,9 +56,12 @@ def candidate_day(candidate, today=None):
 
 
 def candidate_status(candidate):
-    day = candidate_day(candidate)
-    status = "買いサイン" if candidate.get("ma5_cross_up") else "5日線上抜け待ち"
-    return f"{status}（{day}日目）" if day is not None else status
+    return "買いサイン" if candidate.get("ma5_cross_up") else "5日線上抜け待ち"
+
+
+def visible_candidates(candidates):
+    """Keep every valid symbol in the active-candidate store visible."""
+    return [candidate for candidate in candidates if candidate_code(candidate.get("code"))]
 
 
 def candidate_row(candidate):
@@ -89,7 +92,7 @@ def render_candidate_table(candidates, key="candidate_table"):
     import pandas as pd
     import streamlit as st
 
-    st.caption("初回検出時からの1株あたりの変化です。＋は値上がり、−は値下がり。状態の日数は検出日を1日目として数えます。表の銘柄名・コードをクリックすると、すぐ下に日足チャートが出ます。")
+    st.caption("現在の監視状態と初回検出時からの値動きです。表の銘柄名・コードをクリックすると、すぐ下に日足チャートが出ます。")
     event = st.dataframe(
         pd.DataFrame([candidate_row(candidate) for candidate in candidates]),
         hide_index=True,
@@ -97,7 +100,6 @@ def render_candidate_table(candidates, key="candidate_table"):
         key=key,
         on_select="rerun",
         selection_mode="single-cell",
-        alt="監視中の買い候補の株価、初回検出からの値上がり・値下がり、経過日数と日足チャート",
         column_config={
             "コード": st.column_config.TextColumn(width=70),
             "銘柄名": st.column_config.TextColumn(width=165),
