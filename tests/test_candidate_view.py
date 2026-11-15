@@ -1,5 +1,14 @@
 from datetime import date
-from stocknote_candidate_view import candidate_code, candidate_day, candidate_row, candidate_status, price_change, selected_candidate, signed_change
+from stocknote_candidate_view import (
+    candidate_code,
+    candidate_day,
+    candidate_row,
+    candidate_status,
+    price_change,
+    selected_candidate,
+    signed_change,
+    visible_candidates,
+)
 
 
 def test_price_changes_use_detection_price_and_preserve_decimal_yen():
@@ -50,5 +59,14 @@ def test_candidate_day_starts_at_one_and_uses_current_day_not_stale_elapsed():
 def test_candidate_status_only_calls_latest_ma5_cross_a_buy_signal():
     waiting = {"status": "買い候補", "elapsed_days": 2, "ma5_cross_up": False}
     buying = {"status": "監視中", "elapsed_days": 2, "ma5_cross_up": True}
-    assert candidate_status(waiting) == "5日線上抜け待ち（3日目）"
-    assert candidate_status(buying) == "買いサイン（3日目）"
+    assert candidate_status(waiting) == "5日線上抜け待ち"
+    assert candidate_status(buying) == "買いサイン"
+
+
+def test_visible_candidates_keeps_legacy_rule_rows():
+    rows = [
+        {"code": "1234", "entry_rule_version": None},
+        {"code": "5678", "entry_rule_version": 5},
+        {"code": "", "entry_rule_version": 5},
+    ]
+    assert [row["code"] for row in visible_candidates(rows)] == ["1234", "5678"]
