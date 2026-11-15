@@ -1,3 +1,4 @@
+import importlib
 import io
 import re
 from datetime import datetime
@@ -8,7 +9,10 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
+import stocknote_candidate_view
 from stocknote_detail import render_extended_detail
+# Streamlit Cloud can keep helper modules cached across source deployments.
+importlib.reload(stocknote_candidate_view)
 from stocknote_candidate_view import (
     candidate_status,
     price_change,
