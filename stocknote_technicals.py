@@ -20,17 +20,24 @@ def rsi14(close):
     return value.fillna(50)
 
 
-def baseline_pullback_zone(rsi, price, ma25, bb_position, ma75_touched, ma75):
-    """Return the buy-candidate pullback gate used on 2026-10-09."""
-    values = (rsi, price, ma25, bb_position, ma75)
+def baseline_pullback_zone(
+    rsi, price, ma25, bb_position, ma75_touched, ma75,
+    bb_lower_touched=False,
+):
+    """Return True at an actual lower-Bollinger-band contrarian entry zone.
+
+    MA75/MA200 direction is checked by daily_trend_context. The entry itself
+    is intentionally early: an actual lower-band touch is required, while an
+    MA75 touch or a rebound candle is not.
+    """
+    values = (rsi, price, ma25, bb_position)
     if any(value is None or not np.isfinite(float(value)) for value in values):
         return False
     return bool(
-        28.0 <= float(rsi) <= 45.0
+        float(rsi) <= 45.0
         and float(price) <= float(ma25)
         and float(bb_position) <= -0.5
-        and bool(ma75_touched)
-        and float(price) <= float(ma75) * 1.05
+        and bool(bb_lower_touched)
     )
 
 
@@ -269,7 +276,12 @@ def calculate(code, name, hist):
         vol = float(volume.dropna().iloc[-1])
         base = volume.iloc[-21:-1].mean() if len(volume) >= 21 else np.nan
         vr = float(vol/base) if pd.notna(base) and base > 0 else None
-    px, rv = float(close.iloc[-1]), float(rsi14(close).iloc[-1])
+    rsi_series = rsi14(close)
+    px, rv = float(close.iloc[-1]), float(rsi_series.iloc[-1])
+    rebound_confirmed = bool(
+        px > float(close.iloc[-2])
+        and rv > float(rsi_series.iloc[-2])
+    )
     ma5_cross_up = bool(
         float(close.iloc[-2]) <= float(ma5.iloc[-2])
         and px > float(ma5.iloc[-1])
@@ -291,7 +303,10 @@ def calculate(code, name, hist):
     return {
         "code": str(code), "name": name or str(code), "price": px,
         "rsi": rv, "bb_position": bb_pos,
-        "bb_lower_touched": bb_lower_touched, "ma5": float(ma5.iloc[-1]),
+        "bb_lower_touched": bb_lower_touched,
+        "rebound_confirmed": rebound_confirmed,
+        "candidate_stage": "買い確認" if rebound_confirmed or ma5_cross_up else "先行買い候補",
+        "ma5": float(ma5.iloc[-1]),
         "ma5_cross_up": ma5_cross_up,
         "ma5_distance_pct": (px / float(ma5.iloc[-1]) - 1) * 100,
         "ma5_bar_time": str(close.index[-1]),
