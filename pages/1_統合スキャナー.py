@@ -9,7 +9,13 @@ import streamlit as st
 import yfinance as yf
 
 from stocknote_detail import render_extended_detail
-from stocknote_candidate_view import candidate_status, price_change, render_candidate_table, signed_change
+from stocknote_candidate_view import (
+    candidate_status,
+    price_change,
+    render_candidate_table,
+    signed_change,
+    visible_candidates,
+)
 from stocknote_decline_counter import (
     PRICE_LABELS,
     START_MODE_BB_UPPER,
@@ -95,20 +101,9 @@ decline_price_column = PRICE_LABELS[decline_price_label]
 
 st.markdown("## 📌 現在監視中の候補")
 stored_active_candidates = load_active()
-# Hide candidates created by the previous high-zone rules. New-rule entries
-# always carry both the MA75 touch flag and its current distance.
-active_candidates = [
-    r for r in stored_active_candidates
-    if r.get("entry_rule_version") == ENTRY_RULE_VERSION
-    and r.get("ma75_touched") is True
-    and r.get("bb_lower_touched") is True
-    and isinstance(r.get("ma75_distance_pct"), (int, float))
-    and r["ma75_distance_pct"] <= 5.0
-]
-hidden_old_candidates = len(stored_active_candidates) - len(active_candidates)
-if hidden_old_candidates:
-    st.caption(f"旧条件の監視候補 {hidden_old_candidates}銘柄は非表示にしました。")
+active_candidates = visible_candidates(stored_active_candidates)
 if active_candidates:
+    st.success(f"保存中の監視銘柄を{len(active_candidates)}銘柄表示しています。")
     render_candidate_table(active_candidates, key="scanner_candidates")
 
     # st.dataframeの行はスマホでは押しても詳細表示にならないため、
@@ -150,8 +145,11 @@ if active_candidates:
                 f"日足判定：{selected_active.get('trend_reason') or '—'}　／　"
                 f"四半期足判定：{selected_active.get('quarterly_reason') or '—'}"
             )
+            from stocknote_candidate_chart import render_daily_chart
+
+            render_daily_chart(selected_active)
 else:
-    st.info("監視候補を作成中です。保存済みSBIデータがあれば、この画面で自動的に再分析します。")
+    st.info("現在保存されている監視銘柄はありません。必要なときだけ下の「今すぐ再分析」を押してください。")
 
 MARKETS = {
     "日経平均": "^N225", "日経225先物": "NKD=F", "SOX半導体指数": "^SOX",
@@ -1046,12 +1044,11 @@ if u is not None and not u.empty:
             height=650,
         )
     items = tuple((r["コード"], r["銘柄名"]) for _, r in u.iterrows())
-    if run_now or st.session_state.scan_results is None:
+    if run_now:
         with st.spinner(f"保存済み{len(items)}銘柄を分析中…"):
-            if run_now:
-                scan_items.clear()
-                fundamental_employee.clear()
-                market_employee_score.clear()
+            scan_items.clear()
+            fundamental_employee.clear()
+            market_employee_score.clear()
             st.session_state.scan_results = scan_items(
                 items,
                 decline_signal_count,
@@ -1062,6 +1059,9 @@ if u is not None and not u.empty:
                 short_ma75_min_pct,
             )
             performed_scan = True
+
+    if st.session_state.scan_results is None:
+        st.info("全銘柄の分析は自動開始しません。監視銘柄とチャートはページ上部で確認できます。更新する時だけ「今すぐ再分析」を押してください。")
 
 if st.session_state.scan_results is not None:
     ok = [r for r in st.session_state.scan_results if not r.get("error")]
