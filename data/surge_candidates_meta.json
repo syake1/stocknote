@@ -1,8 +1,8 @@
 {
-  "updated_at": "2026-11-16T09:01:58+09:00",
+  "updated_at": "2026-11-17T12:01:53+09:00",
   "scanned": 3686,
   "failed": 0,
-  "candidates": 9,
+  "candidates": 12,
   "morning_candidates": 0,
   "verified_threshold": null,
   "verification_passed": false
