@@ -159,6 +159,7 @@ def score_one(code, name, hist=None):
         bb_position,
         ma75_touched,
         m75,
+        bb_lower_touched=bb_lower_touched,
     )
     rebound_confirmed = bool(
         reversal or lower_wick_reversal
